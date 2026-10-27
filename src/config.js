@@ -1,0 +1,146 @@
+import "dotenv/config";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const serviceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+function integer(value, fallback, minimum, maximum) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed)
+    ? Math.min(maximum, Math.max(minimum, parsed))
+    : fallback;
+}
+
+function bool(value, fallback) {
+  if (value === undefined) return fallback;
+  return value === "true";
+}
+
+export const config = {
+  serviceRoot,
+  host: process.env.ANALYTICS_HOST || "127.0.0.1",
+  port: integer(process.env.ANALYTICS_PORT, 4567, 1, 65535),
+  mongoUri: process.env.MONGODB_URI || null,
+  mongoDbName: process.env.MONGODB_DB_NAME || "owj_market_analytics",
+  neshanMapKey: process.env.NEXT_PUBLIC_NESHAN_MAP_KEY || null,
+  neshanServiceKey: process.env.NESHAN_SERVICE_KEY || process.env.NEXT_PUBLIC_NESHAN_MAP_KEY || null,
+  autoCrawl: bool(process.env.ANALYTICS_AUTO_CRAWL, false),
+  crawlIntervalMs: integer(
+    process.env.ANALYTICS_CRAWL_INTERVAL_MS,
+    21_600_000,
+    60_000,
+    604_800_000,
+  ),
+  browser: {
+    headless: bool(process.env.ANALYTICS_HEADLESS, true),
+    navigationTimeoutMs: integer(
+      process.env.ANALYTICS_NAVIGATION_TIMEOUT_MS,
+      60_000,
+      5_000,
+      180_000,
+    ),
+  },
+  crawl: {
+    // This is a safety ceiling; normal queue size is area count multiplied by
+    // listingsPerArea. Limit areas for quick development crawls.
+    maxListings: integer(process.env.ANALYTICS_MAX_LISTINGS, 10_000, 1, 100_000),
+    listingsPerArea: integer(
+      process.env.ANALYTICS_LISTINGS_PER_AREA,
+      15,
+      1,
+      100,
+    ),
+    maxAreas: integer(process.env.ANALYTICS_MAX_AREAS, 0, 0, 10_000),
+    detailConcurrency: integer(
+      process.env.ANALYTICS_DETAIL_CONCURRENCY,
+      3,
+      1,
+      8,
+    ),
+    publicRequestIntervalMs: integer(
+      process.env.ANALYTICS_PUBLIC_REQUEST_INTERVAL_MS,
+      2_000,
+      250,
+      60_000,
+    ),
+    maxSearchIterations: integer(
+      process.env.ANALYTICS_MAX_SEARCH_ITERATIONS,
+      150,
+      1,
+      1_000,
+    ),
+    maxSearchStalls: integer(
+      process.env.ANALYTICS_MAX_SEARCH_STALLS,
+      5,
+      1,
+      20,
+    ),
+    retryMaxAttempts: integer(process.env.ANALYTICS_RETRY_MAX_ATTEMPTS, 3, 1, 6),
+    retryBaseDelayMs: integer(process.env.ANALYTICS_RETRY_BASE_DELAY_MS, 1_000, 100, 60_000),
+    retryMaxDelayMs: integer(process.env.ANALYTICS_RETRY_MAX_DELAY_MS, 15_000, 500, 300_000),
+    recoveryMaxItems: integer(process.env.ANALYTICS_RECOVERY_MAX_ITEMS, 100, 0, 10_000),
+    recoveryAttempts: integer(process.env.ANALYTICS_RECOVERY_ATTEMPTS, 1, 0, 3),
+    freshDetailHours: integer(process.env.ANALYTICS_FRESH_DETAIL_HOURS, 6, 1, 168),
+    changedDetailHours: integer(process.env.ANALYTICS_CHANGED_DETAIL_HOURS, 2, 1, 48),
+    staleDetailHours: integer(process.env.ANALYTICS_STALE_DETAIL_HOURS, 24, 1, 720),
+    removalMissThreshold: integer(process.env.ANALYTICS_REMOVAL_MISS_THRESHOLD, 3, 2, 20),
+    maxRequestsPerRun: integer(process.env.ANALYTICS_MAX_REQUESTS_PER_RUN, 5_000, 10, 100_000),
+    maxRequestsPerMinute: integer(process.env.ANALYTICS_MAX_REQUESTS_PER_MINUTE, 35, 1, 120),
+  },
+  analytics: {
+    minSpatialSample: integer(
+      process.env.ANALYTICS_MIN_SPATIAL_SAMPLE ?? process.env.ANALYTICS_MIN_DISTRICT_SAMPLE,
+      5,
+      2,
+      10_000,
+    ),
+    spatialCellSizeMeters: integer(
+      process.env.ANALYTICS_SPATIAL_CELL_SIZE_METERS,
+      1_000,
+      250,
+      10_000,
+    ),
+    minModelSample: integer(
+      process.env.ANALYTICS_MIN_MODEL_SAMPLE,
+      30,
+      2,
+      10_000,
+    ),
+  },
+  scoring: {
+    liveDebounceMs: integer(
+      process.env.ANALYTICS_LIVE_SCORING_DEBOUNCE_MS,
+      30_000,
+      5_000,
+      300_000,
+    ),
+  },
+  paths: {
+    data: path.join(serviceRoot, "data"),
+    logs: path.join(serviceRoot, "logs"),
+    listings: path.join(serviceRoot, "data", "listings.json"),
+    listingRecords: path.join(serviceRoot, "data", "listings"),
+    analytics: path.join(serviceRoot, "data", "analytics.json"),
+    model: path.join(serviceRoot, "data", "online-models.json"),
+    scoringReady: path.join(serviceRoot, "data", "scoring-ready.json"),
+    scoredListings: path.join(serviceRoot, "data", "scored-listings.json"),
+    scoringModel: path.join(serviceRoot, "data", "scoring-model.json"),
+    scoringReport: path.join(serviceRoot, "data", "scoring-report.json"),
+    serviceState: path.join(serviceRoot, "data", "service-state.json"),
+    observations: path.join(serviceRoot, "data", "observations"),
+    logFile: path.join(serviceRoot, "logs", "service.jsonl"),
+  },
+  jsonSnapshotEvery: integer(
+    process.env.ANALYTICS_JSON_SNAPSHOT_EVERY,
+    25,
+    1,
+    1_000,
+  ),
+  retention: {
+    maxObservationsPerListing: integer(process.env.ANALYTICS_MAX_OBSERVATIONS_PER_LISTING, 50, 1, 1_000),
+    maxLogBytes: integer(process.env.ANALYTICS_MAX_LOG_BYTES, 25_000_000, 100_000, 1_000_000_000),
+    logArchives: integer(process.env.ANALYTICS_LOG_ARCHIVES, 5, 1, 50),
+    debugArtifactDays: integer(process.env.ANALYTICS_DEBUG_ARTIFACT_DAYS, 14, 1, 365),
+  },
+  logLevel: process.env.ANALYTICS_LOG_LEVEL || "debug",
+};

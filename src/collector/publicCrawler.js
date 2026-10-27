@@ -1,0 +1,820 @@
+import { randomUUID } from "node:crypto";
+import { chromium, request as playwrightRequest } from "playwright";
+import { normalizePersianText } from "../utils/persian.js";
+import {
+  collectListingUrls,
+  createSearchDiagnostics,
+  openSearchPage,
+} from "./browserSearch.js";
+import { crawlPublicListing } from "./publicListing.js";
+import { fetchPublicPostDocument } from "./divarPost.js";
+import { fetchApartmentAreaListings } from "./divarSearch.js";
+import {
+  buildApartmentAreaQueue,
+  fetchTehranAreas,
+  loadBundledTehranAreas,
+  TEHRAN_FOCUS_AREAS,
+} from "./tehranAreas.js";
+import { withRetry } from "./retry.js";
+import { refreshDecision } from "./listingPolicy.js";
+import { planAdaptivePartitions, RequestBudget } from "./crawlPlanning.js";
+import { cleanupOldDebugArtifacts } from "../storage/retention.js";
+
+const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+export function isForbiddenContactUrl(value) {
+  try {
+    const url = new URL(value);
+    return /\/postcontact\/|contact_info/i.test(url.pathname);
+  } catch {
+    return /\/postcontact\/|contact_info/i.test(String(value));
+  }
+}
+
+function safePublicUrl(value) {
+  try {
+    const url = new URL(value);
+    for (const key of [...url.searchParams.keys()]) {
+      if (/auth|cookie|credential|password|phone|session|tracker|access.?token/i.test(key)) {
+        url.searchParams.set(key, "[redacted]");
+      }
+    }
+    return url.href;
+  } catch {
+    return "[invalid-url]";
+  }
+}
+
+export function listingMatchesPartition(listing, discovered) {
+  return validateListingPartition(listing, discovered).matches;
+}
+
+export function validateListingPartition(listing, discovered) {
+  if (discovered?.expectedSubcategory && listing?.subcategory !== discovered.expectedSubcategory) {
+    return { matches: false, reason: "subcategory-mismatch" };
+  }
+  const expectedNames = [discovered?.area?.name, ...(discovered?.area?.aliases || [])]
+    .filter(Boolean).map(normalizePersianText);
+  const name = normalizePersianText(listing?.neighborhood);
+  if (expectedNames.length && expectedNames.includes(name)) return { matches: true, reason: "exact-or-alias-name" };
+  const slug = String(listing?.sourceNeighborhoodSlug || "").toLowerCase();
+  const expectedSlugs = [discovered?.area?.slug, ...(discovered?.area?.secondSlugs || [])]
+    .filter(Boolean).map((value) => String(value).toLowerCase());
+  if (slug && expectedSlugs.includes(slug)) return { matches: true, reason: "exact-or-alias-slug" };
+  return { matches: !expectedNames.length && !expectedSlugs.length, reason: "neighborhood-mismatch" };
+}
+
+export class PublicCrawler {
+  constructor({ config, store, analytics, logger, liveScoring = null }) {
+    this.config = config;
+    this.store = store;
+    this.analytics = analytics;
+    this.logger = logger;
+    this.liveScoring = liveScoring;
+    this.browser = null;
+    this.context = null;
+    this.publicPostRequest = null;
+    this.stopRequested = false;
+    this.currentPromise = null;
+    this.requestSchedule = Promise.resolve();
+    this.lastPublicRequestAt = 0;
+    this.planning = { areaOffset: 0, nextAreaOffset: 0 };
+    this.requestBudget = null;
+    this.cooldownUntil = null;
+    this.state = {
+      status: "idle",
+      runId: null,
+      startedAt: null,
+      endedAt: null,
+      partition: null,
+      area: null,
+      areasTotal: 0,
+      areasCompleted: 0,
+      discovered: 0,
+      queued: 0,
+      processed: 0,
+      successful: 0,
+      failed: 0,
+      recovered: 0,
+      retries: 0,
+      skippedFresh: 0,
+      newListings: 0,
+      refreshedListings: 0,
+      scoringReady: 0,
+      historyOnly: 0,
+      lifecycle: {},
+      changed: 0,
+      contactEndpointAttempts: 0,
+      httpWarnings: {},
+      lastListingToken: null,
+      error: null,
+    };
+  }
+
+  snapshot() {
+    return { ...this.state };
+  }
+
+  async persistState() {
+    await this.store.saveServiceState({
+      schemaVersion: "1.0.0",
+      updatedAt: new Date().toISOString(),
+      crawl: this.snapshot(),
+      planning: this.planning,
+    });
+  }
+
+  start() {
+    if (this.currentPromise) return { started: false, reason: "crawl-already-running", state: this.snapshot() };
+    if (this.cooldownUntil && Date.now() < Date.parse(this.cooldownUntil)) {
+      return { started: false, reason: "platform-cooldown", cooldownUntil: this.cooldownUntil, state: this.snapshot() };
+    }
+    this.stopRequested = false;
+    this.currentPromise = this.run()
+      .catch((error) => {
+        this.logger.error("crawl.unhandled", "Crawl failed", { error: error.stack || error.message });
+      })
+      .finally(() => {
+        this.currentPromise = null;
+      });
+    return { started: true, state: this.snapshot() };
+  }
+
+  async refetchListing(token) {
+    const existing = this.store.getListing(token);
+    if (!existing) return null;
+    const requestContext = await playwrightRequest.newContext();
+    const discovered = {
+      token,
+      url: existing.url,
+      category: existing.crawlPartition?.category ?? null,
+      expectedSubcategory: existing.crawlPartition?.expectedSubcategory ?? existing.subcategory,
+      area: existing.crawlPartition?.area ?? null,
+    };
+    try {
+      const listing = await crawlPublicListing(null, discovered, existing, {
+        logger: this.logger,
+        apiRequestContext: requestContext,
+        apiFetcher: fetchPublicPostDocument,
+      });
+      const runId = `manual-refetch-${randomUUID()}`;
+      const result = await this.store.upsertListing(listing, runId);
+      if (result.listing.quality?.outcome === "scoring-ready") await this.analytics.ingest(result.listing);
+      if (result.changed) this.liveScoring?.requestUpdate("listing-manually-refetched");
+      this.logger.info("crawl.listing.manual-refetch", "Public listing detail manually refreshed", {
+        token, changed: result.changed, runId,
+      });
+      return { ...result, runId };
+    } finally {
+      await requestContext.dispose();
+    }
+  }
+
+  async waitForPublicRequestSlot(token) {
+    const scheduled = this.requestSchedule.then(async () => {
+      const elapsed = Date.now() - this.lastPublicRequestAt;
+      const waitMs = Math.max(0, this.config.crawl.publicRequestIntervalMs - elapsed);
+      if (waitMs > 0) {
+        this.logger.debug("crawl.request.wait", "Waiting for public request slot", { token, waitMs });
+        await delay(waitMs);
+      }
+      this.lastPublicRequestAt = Date.now();
+    });
+    this.requestSchedule = scheduled.catch(() => {});
+    await scheduled;
+  }
+
+  async createContext() {
+    // Keep detail API calls isolated from browser cookies and any authenticated
+    // state that may exist elsewhere in this repository.
+    const rawRequest = await playwrightRequest.newContext();
+    this.publicPostRequest = {
+      get: async (...args) => { await this.waitForPublicRequestSlot("api:get"); await this.requestBudget.acquire("api:get"); return rawRequest.get(...args); },
+      post: async (...args) => { await this.waitForPublicRequestSlot("api:post"); await this.requestBudget.acquire("api:post"); return rawRequest.post(...args); },
+      dispose: () => rawRequest.dispose(),
+    };
+    this.browser = await chromium.launch({ headless: this.config.browser.headless });
+    this.context = await this.browser.newContext({
+      viewport: { width: 1440, height: 900 },
+      locale: "fa-IR",
+    });
+    this.context.setDefaultTimeout(this.config.browser.navigationTimeoutMs);
+    this.context.setDefaultNavigationTimeout(this.config.browser.navigationTimeoutMs);
+
+    await this.context.route("**/*", async (route) => {
+      const url = route.request().url();
+      if (isForbiddenContactUrl(url)) {
+        this.state.contactEndpointAttempts += 1;
+        this.logger.error(
+          "guardrail.contact.blocked",
+          "Blocked a forbidden contact endpoint request",
+          { url, token: this.state.lastListingToken },
+        );
+        await this.persistState();
+        return route.abort("blockedbyclient");
+      }
+      const hostname = (() => {
+        try { return new URL(url).hostname; } catch { return ""; }
+      })();
+      const isDivarRequest = hostname === "divar.ir" || hostname.endsWith(".divar.ir");
+      if (isDivarRequest && ["document", "xhr", "fetch"].includes(route.request().resourceType())) {
+        try { await this.requestBudget.acquire(`browser:${route.request().resourceType()}`); }
+        catch (error) {
+          this.stopRequested = true;
+          this.logger.warn("crawl.request-budget.stop", error.message, { code: error.code, budget: this.requestBudget.snapshot() });
+          return route.abort("blockedbyclient");
+        }
+      }
+      return route.continue();
+    });
+
+    this.context.on("request", (request) => {
+      if (!["document", "xhr", "fetch"].includes(request.resourceType())) return;
+      this.logger.debug("crawl.http.request", "Public browser request started", {
+        method: request.method(),
+        resourceType: request.resourceType(),
+        url: safePublicUrl(request.url()),
+      });
+    });
+
+    this.context.on("response", (response) => {
+      const status = response.status();
+      if (status < 400) {
+        if (["document", "xhr", "fetch"].includes(response.request().resourceType())) {
+          this.logger.debug("crawl.http.response", "Public browser response received", {
+            status,
+            resourceType: response.request().resourceType(),
+            url: safePublicUrl(response.url()),
+          });
+        }
+        return;
+      }
+      this.state.httpWarnings[status] = (this.state.httpWarnings[status] || 0) + 1;
+      const event = status === 429 || status === 403 ? "crawl.platform.backoff" : "crawl.http.warning";
+      this.logger.warn(event, `Public request returned HTTP ${status}`, {
+        status,
+        resourceType: response.request().resourceType(),
+        url: safePublicUrl(response.url()),
+      });
+      if (status === 429 || (status === 403 && this.state.httpWarnings[403] >= 3)) {
+        this.stopRequested = true;
+        this.logger.warn("crawl.guardrail.stop", "Stopping new crawl work after platform-limit signals", {
+          status,
+          count: this.state.httpWarnings[status],
+        });
+      }
+    });
+  }
+
+  async retryPublicOperation(kind, operation) {
+    return withRetry(operation, {
+      maxAttempts: this.config.crawl.retryMaxAttempts,
+      baseDelayMs: this.config.crawl.retryBaseDelayMs,
+      maxDelayMs: this.config.crawl.retryMaxDelayMs,
+      onRetry: async ({ attempt, nextAttempt, maxAttempts, delayMs, error }) => {
+        this.state.retries += 1;
+        this.logger.warn("crawl.retry.wait", "Transient public request failed; waiting before retry", {
+          kind, attempt, nextAttempt, maxAttempts, delayMs,
+          status: error.status ?? null, code: error.code ?? null, error: error.message,
+        });
+        await this.persistState();
+      },
+    });
+  }
+
+  async discover(page, onDiscovered = async () => {}) {
+    const listings = new Map();
+    const failedPartitions = [];
+    const diagnostics = createSearchDiagnostics();
+    this.logger.info("crawl.area-queue.load", "Loading Divar Tehran area directory", {
+      category: "buy-apartment",
+      listingsPerArea: this.config.crawl.listingsPerArea,
+      maxAreas: this.config.crawl.maxAreas || null,
+    });
+    let areas;
+    let areaSource = "live";
+    try {
+      areas = await this.retryPublicOperation("places", () => fetchTehranAreas(this.publicPostRequest));
+    } catch (error) {
+      if ([403, 429].includes(error.status)) throw error;
+      areas = loadBundledTehranAreas();
+      areaSource = "local-fallback";
+      this.logger.warn("crawl.area-queue.local-fallback", "Live place directory unavailable; using bundled public place tree", { error: error.message });
+    }
+    const basePartitions = buildApartmentAreaQueue(areas, {
+      listingsPerArea: this.config.crawl.listingsPerArea,
+      focusAreas: TEHRAN_FOCUS_AREAS,
+    });
+    const plan = planAdaptivePartitions(basePartitions, this.store.getListings(), {
+      totalBudget: Math.min(this.config.crawl.maxListings, basePartitions.length * this.config.crawl.listingsPerArea),
+      maxAreas: this.config.crawl.maxAreas,
+      offset: this.planning.areaOffset,
+    });
+    const partitions = plan.partitions;
+    this.planning.nextAreaOffset = plan.nextOffset;
+    this.state.areasTotal = partitions.length;
+    diagnostics.queue = {
+      category: "buy-apartment",
+      sourceAreaCount: areas.length,
+      areaSource,
+      configuredFocusAreaCount: TEHRAN_FOCUS_AREAS.length,
+      queuedAreaCount: partitions.length,
+      listingsPerArea: this.config.crawl.listingsPerArea,
+      targetCandidates: Math.min(
+        this.config.crawl.maxListings,
+        partitions.length * this.config.crawl.listingsPerArea,
+      ),
+    };
+    this.logger.info("crawl.area-queue.ready", "Tehran buy-apartment area queue created", {
+      ...diagnostics.queue,
+      safetyMaxListings: this.config.crawl.maxListings,
+    });
+    await this.persistState();
+
+    for (const partition of partitions) {
+      if (this.stopRequested || listings.size >= this.config.crawl.maxListings) break;
+      this.state.partition = partition.category;
+      this.state.area = partition.area;
+      await this.persistState();
+      this.logger.info("crawl.discovery.partition.start", "Starting public search partition", {
+        runId: this.state.runId,
+        category: partition.category,
+        area: partition.area,
+        target: partition.limit,
+        url: partition.url,
+      });
+      const partitionDiagnostic = {
+        category: partition.category,
+        expectedSubcategory: partition.expectedSubcategory,
+        area: partition.area,
+        url: partition.url,
+        target: partition.limit,
+        discovered: 0,
+        uniqueQueued: 0,
+        duplicateCount: 0,
+        shortfall: 0,
+      };
+      diagnostics.partitions.push(partitionDiagnostic);
+      const remaining = this.config.crawl.maxListings - listings.size;
+      const limit = Math.min(remaining, partition.limit);
+      const beforeCount = listings.size;
+      const enrich = (listing) => ({
+        ...listing,
+        category: partition.category,
+        expectedSubcategory: partition.expectedSubcategory,
+        area: partition.area,
+      });
+      let discovered;
+      try {
+        const result = await this.retryPublicOperation(`search:${partition.area.slug}`, () =>
+          fetchApartmentAreaListings(this.publicPostRequest, partition.area, {
+            limit,
+            maxPages: this.config.crawl.maxSearchIterations,
+            maxStalls: this.config.crawl.maxSearchStalls,
+            beforePage: async () => {},
+          }));
+        discovered = result.listings;
+        partitionDiagnostic.source = "public-search-api";
+        partitionDiagnostic.hasNextPage = result.hasNextPage;
+        partitionDiagnostic.pagesFetched = result.pagesFetched;
+        partitionDiagnostic.stopReason = result.stopReason;
+        diagnostics.relevantSearchRequests.push({
+          method: "POST",
+          urlWithoutSensitiveData: "https://api.divar.ir/v8/postlist/w/search",
+          status: result.status,
+          category: partition.category,
+          area: partition.area,
+        });
+        this.logger.info("crawl.discovery.api.success", "Public area search returned listing tokens", {
+          category: partition.category,
+          area: partition.area,
+          status: result.status,
+          count: discovered.length,
+          target: limit,
+          hasNextPage: result.hasNextPage,
+          pagesFetched: result.pagesFetched,
+          stopReason: result.stopReason,
+        });
+      } catch (apiError) {
+        partitionDiagnostic.source = "html-fallback";
+        partitionDiagnostic.apiError = apiError.message;
+        this.logger.warn("crawl.discovery.api.fallback", "Public area search failed; using HTML fallback", {
+          category: partition.category,
+          area: partition.area,
+          status: apiError.status ?? null,
+          code: apiError.code ?? null,
+          error: apiError.message,
+        });
+        if (apiError.status === 403 || apiError.status === 429) {
+          this.state.httpWarnings[apiError.status] = (this.state.httpWarnings[apiError.status] || 0) + 1;
+          this.stopRequested = true;
+          this.logger.warn("crawl.guardrail.stop", "Stopping area discovery after a platform-limit signal", {
+            status: apiError.status,
+            count: this.state.httpWarnings[apiError.status],
+            area: partition.area,
+          });
+          throw apiError;
+        }
+        try {
+          await openSearchPage(page, partition.url);
+          discovered = await collectListingUrls(page, {
+            diagnostics,
+            maxListings: limit,
+            maxIterations: this.config.crawl.maxSearchIterations,
+            maxStalls: this.config.crawl.maxSearchStalls,
+          });
+          partitionDiagnostic.stopReason = "html-complete";
+        } catch (htmlError) {
+          partitionDiagnostic.stopReason = "recovery-pending";
+          partitionDiagnostic.htmlError = htmlError.message;
+          failedPartitions.push({ partition, partitionDiagnostic, limit });
+          this.logger.error("crawl.discovery.partition.deferred", "Area discovery failed and was queued for recovery", {
+            area: partition.area, apiError: apiError.message, htmlError: htmlError.message,
+          });
+          continue;
+        }
+      }
+      const newlyDiscovered = [];
+      for (const listing of discovered) {
+        if (!listings.has(listing.token)) {
+          const enriched = enrich(listing);
+          listings.set(listing.token, enriched);
+          newlyDiscovered.push(enriched);
+        }
+      }
+      const addedCount = listings.size - beforeCount;
+      partitionDiagnostic.discovered = discovered.length;
+      partitionDiagnostic.uniqueQueued = addedCount;
+      partitionDiagnostic.duplicateCount = discovered.length - addedCount;
+      partitionDiagnostic.shortfall = Math.max(0, partition.limit - discovered.length);
+      this.state.discovered = listings.size;
+      this.state.queued += newlyDiscovered.length;
+      this.state.areasCompleted += 1;
+      this.logger.info("crawl.discovery.partition.complete", "Public search partition completed", {
+        runId: this.state.runId,
+        category: partition.category,
+        area: partition.area,
+        target: partition.limit,
+        partitionCount: discovered.length,
+        uniqueQueued: addedCount,
+        duplicateCount: partitionDiagnostic.duplicateCount,
+        shortfall: partitionDiagnostic.shortfall,
+        totalUnique: listings.size,
+        areasCompleted: this.state.areasCompleted,
+        areasTotal: this.state.areasTotal,
+      });
+      if (newlyDiscovered.length && !this.stopRequested) await onDiscovered(newlyDiscovered);
+    }
+    for (const item of failedPartitions.slice(0, this.config.crawl.recoveryMaxItems)) {
+      if (this.stopRequested || listings.size >= this.config.crawl.maxListings) break;
+      const beforeCount = listings.size;
+      try {
+        const result = await this.retryPublicOperation(`search-recovery:${item.partition.area.slug}`, () =>
+          fetchApartmentAreaListings(this.publicPostRequest, item.partition.area, {
+            limit: Math.min(item.limit, this.config.crawl.maxListings - listings.size),
+            maxPages: this.config.crawl.maxSearchIterations,
+            maxStalls: this.config.crawl.maxSearchStalls,
+          }));
+        const newlyDiscovered = [];
+        for (const listing of result.listings) {
+          if (!listings.has(listing.token)) {
+            const enriched = {
+              ...listing,
+              category: item.partition.category,
+              expectedSubcategory: item.partition.expectedSubcategory,
+              area: item.partition.area,
+            };
+            listings.set(listing.token, enriched);
+            newlyDiscovered.push(enriched);
+          }
+        }
+        item.partitionDiagnostic.source = "public-search-api-recovery";
+        item.partitionDiagnostic.stopReason = result.stopReason;
+        item.partitionDiagnostic.pagesFetched = result.pagesFetched;
+        item.partitionDiagnostic.discovered = result.listings.length;
+        item.partitionDiagnostic.uniqueQueued = listings.size - beforeCount;
+        item.partitionDiagnostic.duplicateCount = result.listings.length - item.partitionDiagnostic.uniqueQueued;
+        item.partitionDiagnostic.shortfall = Math.max(0, item.partition.limit - result.listings.length);
+        this.state.areasCompleted += 1;
+        this.state.discovered = listings.size;
+        this.state.queued += newlyDiscovered.length;
+        this.logger.info("crawl.discovery.partition.recovered", "Deferred area discovery recovered", {
+          area: item.partition.area, count: result.listings.length,
+        });
+        if (newlyDiscovered.length && !this.stopRequested) await onDiscovered(newlyDiscovered);
+      } catch (error) {
+        item.partitionDiagnostic.stopReason = "recovery-failed";
+        item.partitionDiagnostic.finalError = error.message;
+        if ([403, 429].includes(error.status)) {
+          this.stopRequested = true;
+          throw error;
+        }
+        this.logger.error("crawl.discovery.partition.final-failure", "Area discovery recovery failed", {
+          area: item.partition.area, error: error.message,
+        });
+      }
+    }
+    diagnostics.endedAt = new Date().toISOString();
+    diagnostics.totalUniqueTokens = listings.size;
+    return { listings: [...listings.values()], diagnostics };
+  }
+
+  async processListing(page, discovered, workerId, { recovery = false } = {}) {
+    this.state.lastListingToken = discovered.token;
+    const startedAt = Date.now();
+    this.logger.info("crawl.listing.start", "Processing public listing", {
+      runId: this.state.runId,
+      workerId,
+      token: discovered.token,
+      progress: `${this.state.processed + 1}/${this.state.queued}`,
+      category: discovered.category,
+      area: discovered.area,
+    });
+    try {
+      const existing = this.store.getListing(discovered.token);
+      if (!recovery) {
+        const freshness = refreshDecision(existing, {
+          freshHours: this.config.crawl.freshDetailHours,
+          changedHours: this.config.crawl.changedDetailHours,
+          staleHours: this.config.crawl.staleDetailHours,
+        });
+        if (!freshness.refresh) {
+          await this.store.confirmListingSeen(discovered.token, this.state.runId);
+          this.state.skippedFresh += 1;
+          this.state.successful += 1;
+          this.logger.info("crawl.listing.skipped-fresh", "Recently refreshed listing detail was not requested again", {
+            runId: this.state.runId, workerId, token: discovered.token,
+            ageMs: freshness.ageMs, intervalHours: freshness.intervalHours,
+          });
+          return { success: true, skippedFresh: true };
+        }
+      }
+      const listing = await crawlPublicListing(page, discovered, existing, {
+        logger: this.logger,
+        apiRequestContext: this.publicPostRequest,
+        apiFetcher: (requestContext, token) => this.retryPublicOperation(
+          `detail:${token}`,
+          () => fetchPublicPostDocument(requestContext, token),
+        ),
+      });
+      const partitionValidation = validateListingPartition(listing, discovered);
+      if (!partitionValidation.matches) {
+        throw Object.assign(new Error(
+          `Listing partition mismatch: expected ${discovered.expectedSubcategory || "any"} in ${discovered.area?.name || "any area"}, got ${listing.subcategory || "unknown"} in ${listing.neighborhood || "unknown area"}`,
+        ), { code: partitionValidation.reason });
+      }
+      const result = await this.store.upsertListing(listing, this.state.runId);
+      const scoringReady = result.listing.quality?.outcome === "scoring-ready";
+      const analysis = scoringReady
+        ? await this.analytics.ingest(result.listing)
+        : { status: "history-only", score: null };
+      this.state.successful += 1;
+      if (result.existed) this.state.refreshedListings += 1;
+      else this.state.newListings += 1;
+      if (scoringReady) this.state.scoringReady += 1;
+      else this.state.historyOnly += 1;
+      if (result.changed) this.state.changed += 1;
+      if (result.changed) this.liveScoring?.requestUpdate(result.existed ? "listing-refreshed" : "listing-added");
+      this.logger.info("crawl.listing.success", "Public listing stored and analyzed", {
+        runId: this.state.runId,
+        workerId,
+        token: listing.token,
+        changed: result.changed,
+        elapsedMs: Date.now() - startedAt,
+        analysisStatus: analysis.status,
+        score: analysis.score,
+        category: listing.subcategory,
+        requestedArea: discovered.area,
+        actualNeighborhood: listing.neighborhood,
+      });
+      return { success: true };
+    } catch (error) {
+      if (!recovery) this.state.failed += 1;
+      if (error.status === 403 || error.status === 429) {
+        this.state.httpWarnings[error.status] = (this.state.httpWarnings[error.status] || 0) + 1;
+        this.logger.warn("crawl.platform.backoff", `Public detail API returned HTTP ${error.status}`, {
+          status: error.status,
+          token: discovered.token,
+          count: this.state.httpWarnings[error.status],
+        });
+        if (error.status === 429 || this.state.httpWarnings[403] >= 3) {
+          this.stopRequested = true;
+          this.logger.warn("crawl.guardrail.stop", "Stopping new crawl work after platform-limit signals", {
+            status: error.status,
+            count: this.state.httpWarnings[error.status],
+          });
+        }
+      }
+      this.logger.error("crawl.listing.failure", "Public listing failed", {
+        runId: this.state.runId,
+        workerId,
+        token: discovered.token,
+        elapsedMs: Date.now() - startedAt,
+        error: error.stack || error.message,
+      });
+      return { success: false, error };
+    } finally {
+      if (!recovery) this.state.processed += 1;
+      await this.persistState();
+    }
+  }
+
+  async processDetails(listings, { append = false } = {}) {
+    if (!append) this.state.queued = listings.length;
+    await this.persistState();
+    let cursor = 0;
+    const recoveryQueue = [];
+    const workerCount = Math.min(this.config.crawl.detailConcurrency, listings.length);
+    const runWorker = async (workerId) => {
+      const page = await this.context.newPage();
+      try {
+        while (!this.stopRequested) {
+          const index = cursor;
+          cursor += 1;
+          if (index >= listings.length) break;
+          const result = await this.processListing(page, listings[index], workerId);
+          if (!result.success && ![403, 429].includes(result.error?.status)) {
+            recoveryQueue.push(listings[index]);
+          }
+        }
+      } finally {
+        await page.close().catch(() => {});
+      }
+    };
+    await Promise.all(Array.from({ length: workerCount }, (_, index) => runWorker(index + 1)));
+    const recoveryLimit = Math.min(this.config.crawl.recoveryMaxItems, recoveryQueue.length);
+    for (let attempt = 1; attempt <= this.config.crawl.recoveryAttempts && !this.stopRequested; attempt += 1) {
+      const batch = recoveryQueue.splice(0, recoveryLimit);
+      if (!batch.length) break;
+      this.logger.info("crawl.recovery.start", "Retrying failed public listing details", {
+        attempt, count: batch.length,
+      });
+      const page = await this.context.newPage();
+      try {
+        for (const listing of batch) {
+          if (this.stopRequested) break;
+          const result = await this.processListing(page, listing, "recovery", { recovery: true });
+          if (result.success) {
+            this.state.recovered += 1;
+            this.state.failed = Math.max(0, this.state.failed - 1);
+          } else if (![403, 429].includes(result.error?.status)) recoveryQueue.push(listing);
+        }
+      } finally {
+        await page.close().catch(() => {});
+      }
+    }
+  }
+
+  async run() {
+    const previousState = await this.store.readServiceState();
+    this.planning = {
+      areaOffset: previousState?.planning?.nextAreaOffset || 0,
+      nextAreaOffset: previousState?.planning?.nextAreaOffset || 0,
+    };
+    this.requestBudget = new RequestBudget({
+      maxPerRun: this.config.crawl.maxRequestsPerRun,
+      maxPerMinute: this.config.crawl.maxRequestsPerMinute,
+    });
+    this.state = {
+      status: "starting",
+      runId: randomUUID(),
+      startedAt: new Date().toISOString(),
+      endedAt: null,
+      partition: null,
+      area: null,
+      areasTotal: 0,
+      areasCompleted: 0,
+      discovered: 0,
+      queued: 0,
+      processed: 0,
+      successful: 0,
+      failed: 0,
+      recovered: 0,
+      retries: 0,
+      skippedFresh: 0,
+      newListings: 0,
+      refreshedListings: 0,
+      scoringReady: 0,
+      historyOnly: 0,
+      lifecycle: {},
+      requestBudget: this.requestBudget.snapshot(),
+      completeness: { status: "running", areaCoverage: 0, detailCoverage: 0 },
+      cooldownUntil: null,
+      changed: 0,
+      contactEndpointAttempts: 0,
+      httpWarnings: {},
+      lastListingToken: null,
+      error: null,
+    };
+    await this.persistState();
+    this.logger.info("crawl.run.start", "Live public crawl started", {
+      runId: this.state.runId,
+      maxListings: this.config.crawl.maxListings,
+      category: "buy-apartment",
+      listingsPerArea: this.config.crawl.listingsPerArea,
+      maxAreas: this.config.crawl.maxAreas || null,
+      concurrency: this.config.crawl.detailConcurrency,
+      requestIntervalMs: this.config.crawl.publicRequestIntervalMs,
+    });
+
+    try {
+      await this.createContext();
+      this.state.status = "discovering";
+      await this.persistState();
+      const searchPage = await this.context.newPage();
+      const { listings, diagnostics } = await this.discover(searchPage, async (batch) => {
+        this.state.status = "processing";
+        await this.persistState();
+        await this.processDetails(batch, { append: true });
+        if (!this.stopRequested) this.state.status = "discovering";
+      });
+      await searchPage.close();
+      const lifecycleEligibleAreaIds = diagnostics.partitions
+        .filter((partition) => partition.stopReason === "source-exhausted")
+        .map((partition) => partition.area?.id)
+        .filter(Number.isInteger);
+      this.state.lifecycle = await this.store.reconcileLifecycle({
+        runId: this.state.runId,
+        observedTokens: listings.map((listing) => listing.token),
+        completedAreaIds: lifecycleEligibleAreaIds,
+        removalThreshold: this.config.crawl.removalMissThreshold,
+      });
+      await this.store.flush();
+
+      const areasComplete = this.state.areasTotal > 0 && this.state.areasCompleted === this.state.areasTotal;
+      const detailsComplete = this.state.queued === 0 || this.state.processed === this.state.queued;
+      this.state.completeness = {
+        status: !this.stopRequested && areasComplete && detailsComplete && this.state.failed === 0 ? "complete" : "partial",
+        areaCoverage: this.state.areasTotal ? Number((this.state.areasCompleted / this.state.areasTotal * 100).toFixed(2)) : 0,
+        detailCoverage: this.state.queued ? Number((this.state.successful / this.state.queued * 100).toFixed(2)) : 100,
+        failedDetails: this.state.failed,
+        stopRequested: this.stopRequested,
+      };
+      diagnostics.completeness = this.state.completeness;
+
+      const analytics = {
+        ...this.analytics.publicSnapshot(),
+        recommendations: this.analytics.recommendations(100),
+        searchDiagnostics: diagnostics,
+      };
+      await this.store.saveAnalytics(analytics);
+      const retention = await this.store.compactHistory({
+        maxObservationsPerListing: this.config.retention.maxObservationsPerListing,
+      });
+      const debugRetention = await cleanupOldDebugArtifacts(this.config.serviceRoot, {
+        maxAgeDays: this.config.retention.debugArtifactDays,
+      });
+      this.logger.info("crawl.retention.complete", "Crawler storage retention applied", {
+        ...retention, debugArtifactsRemoved: debugRetention.removed.length,
+      });
+      this.state.status = this.stopRequested ? "stopped" : "completed";
+    } catch (error) {
+      if (error.status === 429) {
+        const cooldownMs = Math.max(15 * 60_000, error.retryAfterMs || 0);
+        this.cooldownUntil = new Date(Date.now() + cooldownMs).toISOString();
+        this.state.cooldownUntil = this.cooldownUntil;
+      }
+      this.state.status = this.stopRequested && [403, 429].includes(error.status)
+        ? "stopped"
+        : "failed";
+      this.state.error = error.message;
+      this.state.completeness = {
+        status: this.state.status === "stopped" ? "stopped" : "failed",
+        areaCoverage: this.state.areasTotal ? Number((this.state.areasCompleted / this.state.areasTotal * 100).toFixed(2)) : 0,
+        detailCoverage: this.state.queued ? Number((this.state.successful / this.state.queued * 100).toFixed(2)) : 0,
+        failedDetails: this.state.failed,
+        stopRequested: this.stopRequested,
+      };
+      this.logger.error("crawl.run.failure", "Live public crawl failed", {
+        runId: this.state.runId,
+        error: error.stack || error.message,
+      });
+    } finally {
+      this.state.endedAt = new Date().toISOString();
+      this.state.requestBudget = this.requestBudget?.snapshot() || {};
+      this.planning.areaOffset = this.planning.nextAreaOffset;
+      this.state.partition = null;
+      this.state.area = null;
+      await this.persistState();
+      await this.publicPostRequest?.dispose().catch(() => {});
+      await this.context?.close().catch(() => {});
+      await this.browser?.close().catch(() => {});
+      this.context = null;
+      this.publicPostRequest = null;
+      this.browser = null;
+      this.logger.info("crawl.run.complete", "Live public crawl ended", this.snapshot());
+    }
+  }
+
+  async stop() {
+    this.stopRequested = true;
+    this.logger.warn("crawl.stop.requested", "Crawler stop requested", { runId: this.state.runId });
+    await this.context?.close().catch(() => {});
+    if (this.currentPromise) await this.currentPromise;
+  }
+
+  async waitForCompletion() {
+    if (this.currentPromise) await this.currentPromise;
+    return this.snapshot();
+  }
+}
