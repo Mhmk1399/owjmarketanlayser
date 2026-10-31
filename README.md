@@ -105,6 +105,7 @@ auditable instead of silently mixing their data.
 | --- | --- | --- |
 | `GET` | `/health` | Service, crawl, file, and guardrail status |
 | `GET` | `/dashboard` | Decision-focused crawl, quality, coordinate, model, and recommendation view |
+| `GET` | `/data-quality-data` | Data-quality metrics for the `/data-quality` dashboard page |
 | `GET` | `/scores?limit=100&offset=0&sort=recommendation&direction=desc&query=` | Paginated, searchable scores from `scored-listings.json` |
 | `GET` | `/score-details/:token` | Complete scoring explanation and population rank for one ad |
 | `GET` | `/score-analytics-data` | Population-level validation, distributions, cleaning, and neighborhood metrics |

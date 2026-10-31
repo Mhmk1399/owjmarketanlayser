@@ -1,12 +1,20 @@
+"use client";
+
 import { useEffect } from "react";
 
-/* ══════════════════════════════════════════════════════════════════
-   FORMATTERS (translated to Persian, logic unchanged)
-   ══════════════════════════════════════════════════════════════════ */
+/*
+ * OWJ shared UI
+ * Design only: the exported functions, formatting rules and route targets are
+ * kept compatible with the original shared.jsx.
+ */
+
+/* Formatters — original calculations and signatures preserved. */
 export const numberFormat = new Intl.NumberFormat("fa-IR");
+
 export const decimalFormat = new Intl.NumberFormat("fa-IR", {
   maximumFractionDigits: 1,
 });
+
 const dateTime = new Intl.DateTimeFormat("fa-IR", {
   dateStyle: "medium",
   timeStyle: "short",
@@ -42,110 +50,328 @@ export function clamp(value) {
   return Math.max(0, Math.min(100, Number(value) || 0));
 }
 
-/* ══════════════════════════════════════════════════════════════════
-   DESIGN TOKENS (shared with all pages)
-   ══════════════════════════════════════════════════════════════════ */
+/* Same public token keys, redesigned around neutral surfaces. */
 export const T = {
   primary: "#66308d",
-  primaryLight: "#7f4aaa",
-  primaryPale: "#a06cc8",
-  primaryGlow: "rgba(102,48,141,0.35)",
-  primaryBg: "rgba(102,48,141,0.10)",
-  primaryBg2: "rgba(102,48,141,0.18)",
+  primaryLight: "#74479a",
+  primaryPale: "#82569f",
+  primaryGlow: "rgba(102,48,141,0.12)",
+  primaryBg: "#f4eef8",
+  primaryBg2: "#e9daef",
 
   secondary: "#01ae9b",
-  secondaryLight: "#19c5b2",
-  secondaryDark: "#019384",
-  secondaryGlow: "rgba(1,174,155,0.30)",
-  secondaryBg: "rgba(1,174,155,0.10)",
-  secondaryBg2: "rgba(1,174,155,0.18)",
+  secondaryLight: "#28c1ae",
+  secondaryDark: "#087a6e",
+  secondaryGlow: "rgba(1,174,155,0.10)",
+  secondaryBg: "#e8f8f5",
+  secondaryBg2: "#d2f0e9",
 
-  bg: "#0c0b10",
-  bgGradient: "linear-gradient(168deg, #0c0b10 0%, #110f18 40%, #0d1117 100%)",
-  surface: "#16141f",
-  surfaceLight: "#1e1b2a",
-  surfaceHover: "#241f34",
-  surfaceGlass: "rgba(22,20,31,0.75)",
-  raised: "#262237",
+  bg: "#f7f8fa",
+  bgGradient: "linear-gradient(180deg, #ffffff 0%, #f7f8fa 56%, #f7f8fa 100%)",
+  surface: "#ffffff",
+  surfaceLight: "#fbfbfc",
+  surfaceHover: "#f8f7fa",
+  surfaceGlass: "rgba(255,255,255,0.96)",
+  raised: "#f5f6f8",
 
-  border: "rgba(255,255,255,0.06)",
-  borderMed: "rgba(255,255,255,0.09)",
-  borderLight: "rgba(255,255,255,0.13)",
+  border: "#edeef1",
+  borderMed: "#e7e8ec",
+  borderLight: "#dcdfe5",
 
-  text: "#ede9f5",
-  textSec: "#a39bb5",
-  textMuted: "#6e6580",
-  white: "#ffffff",
+  text: "#202127",
+  textSec: "#60646e",
+  textMuted: "#6b707b",
+  // Existing consumers use T.white for prominent text on previously dark cards.
+  white: "#17191f",
 
-  green: "#34d399",
-  greenBg: "rgba(52,211,153,0.10)",
-  greenBg2: "rgba(52,211,153,0.18)",
-  orange: "#fb923c",
-  orangeBg: "rgba(251,146,60,0.10)",
-  orangeBg2: "rgba(251,146,60,0.18)",
-  red: "#f87171",
-  redBg: "rgba(248,113,113,0.10)",
-  redBg2: "rgba(248,113,113,0.18)",
+  green: "#14785f",
+  greenBg: "#eaf7f0",
+  greenBg2: "#d6eee2",
+  orange: "#a9661b",
+  orangeBg: "#fff5e8",
+  orangeBg2: "#ffebcd",
+  red: "#b6404b",
+  redBg: "#fff0f1",
+  redBg2: "#f9dbde",
 
-  radius: 14,
-  radiusSm: 10,
-  radiusXs: 7,
-
-  shadow: "0 4px 24px rgba(0,0,0,0.25), 0 1px 4px rgba(0,0,0,0.15)",
-  shadowLg: "0 8px 40px rgba(0,0,0,0.35)",
+  radius: 18,
+  radiusSm: 13,
+  radiusXs: 10,
+  shadow: "0 4px 22px rgba(24,31,41,0.035), 0 1px 3px rgba(24,31,41,0.025)",
+  shadowLg: "0 12px 34px rgba(24,31,41,0.07)",
 };
 
-/* ══════════════════════════════════════════════════════════════════
-   GLOBAL CSS INJECTION (once per app lifecycle)
-   ══════════════════════════════════════════════════════════════════ */
+/*
+ * The shared style sheet lives IN this file, not in an external CSS file.
+ * Component rules are prefixed so the header/footer do not style other pages.
+ */
 const GLOBAL_CSS = `
-@import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700;800;900&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800;900&display=swap');
 
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root { --font-family: 'Vazirmatn', Tahoma, sans-serif; }
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body {
+    background: ${T.bg};
+    font-family: var(--font-family);
+    color: ${T.text};
+    direction: rtl;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  body { margin: 0; }
+  input, button, select, textarea { font-family: inherit; }
+  button, a { -webkit-tap-highlight-color: transparent; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #dfe1e7; border-radius: 99px; }
 
-html, body {
-  background: ${T.bg};
-  font-family: 'Vazirmatn', Tahoma, sans-serif;
-  color: ${T.text};
-  direction: rtl;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
+  .owj-app-header {
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    width: 100%;
+    background: ${T.surfaceGlass};
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    border-bottom: 1px solid ${T.border};
+  }
+  .owj-app-header__inner {
+    display: flex;
+    align-items: center;
+    gap: 26px;
+    width: 100%;
+    max-width: 1440px;
+    min-height: 76px;
+    margin: 0 auto;
+    padding: 12px 28px;
+    direction: rtl;
+  }
+  .owj-app-header__brand {
+    display: inline-flex;
+    align-items: center;
+    gap: 11px;
+    min-width: max-content;
+    flex: none;
+    text-decoration: none;
+    color: ${T.text};
+  }
+  .owj-app-header__logo {
+    display: grid;
+    place-items: center;
+    width: 43px;
+    height: 43px;
+    border: 1px solid ${T.primaryBg2};
+    border-radius: 14px;
+    background: ${T.primaryBg};
+    color: ${T.primary};
+    flex: none;
+  }
+  .owj-app-header__brand-copy { display: flex; flex-direction: column; gap: 2px; line-height: 1.35; }
+  .owj-app-header__brand-copy strong { font-weight: 900; font-size: 18px; color: ${T.white}; }
+  .owj-app-header__brand-copy small { font-weight: 500; font-size: 11px; color: ${T.textMuted}; }
+  .owj-app-header__nav {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: 1;
+    min-width: 0;
+    width: 100%;
+  }
+  .owj-app-header__nav-scroll {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex: 1;
+    min-width: 0;
+    overflow-x: auto;
+    padding-block: 3px;
+    scrollbar-width: thin;
+    scrollbar-color: ${T.borderLight} transparent;
+    overscroll-behavior-inline: contain;
+  }
+  .owj-app-header__nav-scroll::-webkit-scrollbar { height: 4px; }
+  .owj-app-header__link {
+    display: inline-flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 43px;
+    padding: 9px 14px;
+    border-radius: 11px;
+    border: 1px solid transparent;
+    color: ${T.textSec};
+    text-decoration: none;
+    white-space: nowrap;
+    flex: none;
+    font-size: 13px;
+    font-weight: 600;
+    transition: background .18s ease, color .18s ease, border-color .18s ease;
+  }
+  .owj-app-header__link:hover {
+    color: ${T.primary};
+    background: ${T.primaryBg};
+  }
+  .owj-app-header__link[aria-current="page"] {
+    color: ${T.primary};
+    border-color: ${T.primaryBg2};
+    background: ${T.primaryBg};
+    font-weight: 800;
+  }
+  .owj-app-header__link:focus-visible,
+  .owj-app-header__brand:focus-visible,
+  .owj-page-error__back:focus-visible {
+    outline: 3px solid rgba(102,48,141,.28);
+    outline-offset: 3px;
+  }
 
-a { color: inherit; }
+  .owj-app-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px 20px;
+    max-width: 1440px;
+    margin: 0 auto;
+    padding: 23px 28px 34px;
+    border-top: 1px solid ${T.border};
+    color: ${T.textMuted};
+    font-size: 12px;
+    line-height: 1.9;
+    direction: rtl;
+  }
+  .owj-app-footer strong { color: ${T.text}; font-weight: 800; }
 
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: ${T.borderLight}; border-radius: 99px; }
-::-webkit-scrollbar-thumb:hover { background: ${T.textMuted}; }
+  .owj-page-state {
+    min-height: 100svh;
+    padding: 22px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: ${T.bgGradient};
+    color: ${T.text};
+    direction: rtl;
+    text-align: center;
+  }
+  .owj-page-state__card {
+    width: 100%;
+    max-width: 480px;
+    padding: clamp(25px, 6vw, 44px) 24px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 17px;
+    background: ${T.surface};
+    border: 1px solid ${T.border};
+    border-radius: 24px;
+    box-shadow: ${T.shadow};
+    animation: owjFadeIn .28s ease both;
+  }
+  .owj-page-state__icon {
+    width: 68px;
+    height: 68px;
+    display: grid;
+    place-items: center;
+    border-radius: 20px;
+    background: ${T.primaryBg};
+    color: ${T.primary};
+    border: 1px solid ${T.primaryBg2};
+  }
+  .owj-page-state__icon--error {
+    color: ${T.red};
+    background: ${T.redBg};
+    border-color: ${T.redBg2};
+  }
+  .owj-page-state h1 {
+    margin: 0;
+    font-weight: 800;
+    font-size: clamp(19px, 4vw, 23px);
+    line-height: 1.7;
+  }
+  .owj-page-state p {
+    margin: 0;
+    color: ${T.textSec};
+    font-size: 13px;
+    line-height: 1.95;
+    max-width: 390px;
+    overflow-wrap: anywhere;
+  }
+  .owj-page-state__dots { display: flex; align-items: center; gap: 7px; min-height: 14px; }
+  .owj-page-state__dots span {
+    display: block;
+    width: 8px;
+    height: 8px;
+    background: ${T.primary};
+    border-radius: 50%;
+    animation: owjDot 1.3s ease-in-out infinite;
+  }
+  .owj-page-state__dots span:nth-child(2) {
+    background: ${T.secondary};
+    animation-delay: .16s;
+  }
+  .owj-page-state__dots span:nth-child(3) { animation-delay: .32s; }
+  .owj-page-error__message {
+    padding: 12px 16px;
+    border: 1px solid ${T.border};
+    border-radius: 12px;
+    background: ${T.raised};
+  }
+  .owj-page-error__back {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    min-height: 48px;
+    padding: 12px 22px;
+    margin-top: 5px;
+    background: ${T.primary};
+    color: #fff;
+    border-radius: 12px;
+    text-decoration: none;
+    font-weight: 700;
+    font-size: 13px;
+    transition: background .2s ease;
+  }
+  .owj-page-error__back:hover { background: #552676; }
 
-input::placeholder { color: ${T.textMuted}; font-family: inherit; }
+  @keyframes owjPulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: .5; transform: scale(1.15); }
+  }
+  @keyframes owjFloat {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-5px); }
+  }
+  @keyframes owjDot {
+    0%, 80%, 100% { transform: scale(.6); opacity: .3; }
+    40% { transform: scale(1); opacity: 1; }
+  }
+  @keyframes owjSlideUp {
+    from { opacity: 0; transform: translateY(9px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes owjFadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes owjSpin { to { transform: rotate(360deg); } }
 
-button { font-family: inherit; }
-
-@keyframes owjPulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: .5; transform: scale(1.15); }
-}
-@keyframes owjFloat {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-6px); }
-}
-@keyframes owjDot {
-  0%, 80%, 100% { transform: scale(.5); opacity: .25; }
-  40% { transform: scale(1); opacity: 1; }
-}
-@keyframes owjSlideUp {
-  from { opacity: 0; transform: translateY(16px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-@keyframes owjFadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-@keyframes owjSpin {
-  to { transform: rotate(360deg); }
-}
+  @media (max-width: 970px) {
+    .owj-app-header__inner { flex-wrap: wrap; row-gap: 10px; padding: 11px 20px 9px; }
+    .owj-app-header__nav { order: 3; flex-basis: 100%; gap: 6px; padding: 0 0 3px; }
+  }
+  @media (max-width: 600px) {
+    .owj-app-header__inner { padding: 10px 15px 8px; row-gap: 7px; }
+    .owj-app-header__logo { width: 40px; height: 40px; border-radius: 12px; }
+    .owj-app-header__brand-copy strong { font-size: 16px; }
+    .owj-app-header__brand-copy small { font-size: 10px; }
+    .owj-app-header__link { min-height: 41px; padding: 9px 12px; font-size: 12px; border-radius: 10px; }
+    .owj-app-footer { padding: 18px 16px 28px; font-size: 11px; }
+    .owj-page-state { padding: 14px; }
+    .owj-page-state__card { border-radius: 19px; padding: 32px 18px; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .owj-page-state__card, .owj-page-state__dots span { animation: none; }
+    .owj-app-header__link { transition: none; }
+  }
 `;
 
 let cssInjected = false;
@@ -157,9 +383,7 @@ export function injectGlobalCSS() {
   document.head.appendChild(el);
 }
 
-/* ══════════════════════════════════════════════════════════════════
-   ICON COMPONENT (unchanged logic)
-   ══════════════════════════════════════════════════════════════════ */
+/* Icon: original name-to-SVG mapping preserved. */
 export function Icon({ name, size = 20 }) {
   const paths = {
     activity: <path d="M3 12h4l2.3-7 4.4 14 2.3-7h5" />,
@@ -226,6 +450,7 @@ export function Icon({ name, size = 20 }) {
       </>
     ),
   };
+
   return (
     <svg
       width={size}
@@ -247,347 +472,128 @@ export function Icon({ name, size = 20 }) {
   );
 }
 
-/* ══════════════════════════════════════════════════════════════════
-   APP HEADER (املاک اوج branded)
-   ══════════════════════════════════════════════════════════════════ */
-export function AppHeader({ active = "overview" }) {
+const NAV_LINKS = [
+  { key: "listings", label: "آگهی‌ها", href: "/catalog" },
+  { key: "overview", label: "نمای کلی", href: "/" },
+  { key: "locations", label: "کاوش مناطق", href: "/explore/tehran" },
+  { key: "analytics", label: "تحلیل امتیاز", href: "/score-analytics" },
+  { key: "workshop", label: "کارگاه امتیاز", href: "/score-workshop" },
+  { key: "quality", label: "کیفیت داده", href: "/data-quality" },
+];
+
+export function AppNavigation({ active, className = "" }) {
   useEffect(() => {
     injectGlobalCSS();
   }, []);
 
-  const navLinks = [
-    { key: "overview", label: "نمای کلی", href: "/" },
-    { key: "locations", label: "کاوش مناطق", href: "/explore/tehran" },
-    { key: "listings", label: "آگهی‌ها", href: "/catalog" },
-    { key: "analytics", label: "تحلیل امتیاز", href: "/score-analytics" },
-    { key: "workshop", label: "کارگاه امتیاز", href: "/score-workshop" },
-    { key: "quality", label: "کیفیت داده", href: "/data-quality" },
-  ];
+  const pathname = typeof window === "undefined" ? "/" : window.location.pathname;
+  const activeKey = active ?? (
+    pathname === "/catalog" || pathname.startsWith("/listing/") ? "listings" :
+    pathname.startsWith("/explore") ? "locations" :
+    NAV_LINKS.find((link) => link.href === pathname)?.key
+  );
+  const renderLink = (link) => (
+    <a
+      key={link.key}
+      className={`owj-app-header__link${link.key === "listings" ? " owj-app-header__link--listings" : ""}`}
+      href={link.href}
+      aria-current={activeKey === link.key ? "page" : undefined}
+    >
+      {link.label}
+    </a>
+  );
 
   return (
-    <header className="app-header"
-      style={{
-        position: "sticky",
-        top: 0,
-        zIndex: 100,
-        display: "flex",
-        alignItems: "center",
-        gap: 16,
-        padding: "0 28px",
-        height: 68,
-        background: T.surfaceGlass,
-        backdropFilter: "blur(24px) saturate(1.8)",
-        WebkitBackdropFilter: "blur(24px) saturate(1.8)",
-        borderBottom: `1px solid ${T.border}`,
-        direction: "rtl",
-        fontFamily: "'Vazirmatn', Tahoma, sans-serif",
-      }}
-    >
-      {/* Brand */}
-      <a
-        href="/"
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 12,
-          textDecoration: "none",
-          color: T.text,
-          flexShrink: 0,
-          transition: "opacity .2s",
-        }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.opacity = "0.85";
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.opacity = "1";
-        }}
-      >
-        <span
-          style={{
-            width: 40,
-            height: 40,
-            borderRadius: 12,
-            background: `linear-gradient(135deg, ${T.primary} 0%, ${T.secondary} 100%)`,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            color: "#fff",
-            fontWeight: 900,
-            boxShadow: `0 2px 12px ${T.primaryGlow}`,
-          }}
-        >
-          <Icon name="building" size={22} />
-        </span>
-        <span
-          style={{ display: "flex", flexDirection: "column", lineHeight: 1.2 }}
-        >
-          <strong
-            style={{
-              fontWeight: 900,
-              fontSize: 17,
-              color: T.white,
-              letterSpacing: -0.5,
-            }}
-          >
-            املاک اوج
-          </strong>
-          <small style={{ fontSize: 11, color: T.textMuted, fontWeight: 400 }}>
-            رصدخانه بازار مسکن
-          </small>
-        </span>
-      </a>
+    <nav className={`owj-app-header__nav ${className}`.trim()} aria-label="ناوبری اصلی">
+      {renderLink(NAV_LINKS[0])}
+      <div className="owj-app-header__nav-scroll">
+        {NAV_LINKS.slice(1).map(renderLink)}
+      </div>
+    </nav>
+  );
+}
 
-      {/* Nav */}
-      <nav className="app-header__nav"
-        style={{ display: "flex", gap: 4, marginRight: 16, flex: 1 }}
-        aria-label="ناوبری اصلی"
-      >
-        {navLinks.map((link) => {
-          const isActive = active === link.key;
-          return (
-            <a
-              key={link.key}
-              href={link.href}
-              style={{
-                padding: "8px 18px",
-                borderRadius: 8,
-                fontSize: 13,
-                fontWeight: isActive ? 700 : 500,
-                color: isActive ? T.white : T.textSec,
-                textDecoration: "none",
-                background: isActive ? T.primaryBg : "transparent",
-                border: `1px solid ${isActive ? T.primaryBg2 : "transparent"}`,
-                transition: "all .2s",
-              }}
-              onMouseEnter={(e) => {
-                if (!isActive) {
-                  e.currentTarget.style.color = T.text;
-                  e.currentTarget.style.background = T.raised;
-                }
-              }}
-              onMouseLeave={(e) => {
-                if (!isActive) {
-                  e.currentTarget.style.color = T.textSec;
-                  e.currentTarget.style.background = "transparent";
-                }
-              }}
-            >
-              {link.label}
-            </a>
-          );
-        })}
-      </nav>
+export function AppHeader({ active }) {
+  return (
+    <header className="owj-app-header">
+      <div className="owj-app-header__inner">
+        <a className="owj-app-header__brand" href="/">
+          <span className="owj-app-header__logo">
+            <Icon name="building" size={23} />
+          </span>
+          <span className="owj-app-header__brand-copy">
+            <strong>املاک اوج</strong>
+            <small>رصدخانه بازار مسکن</small>
+          </span>
+        </a>
+
+        <AppNavigation active={active} />
+      </div>
     </header>
   );
 }
 
-/* ══════════════════════════════════════════════════════════════════
-   APP FOOTER
-   ══════════════════════════════════════════════════════════════════ */
 export function AppFooter() {
   return (
-    <footer
-      style={{
-        display: "flex",
-        justifyContent: "space-between",
-        padding: "22px 28px",
-        borderTop: `1px solid ${T.border}`,
-        fontSize: 12,
-        color: T.textMuted,
-        maxWidth: 1400,
-        margin: "0 auto",
-        flexWrap: "wrap",
-        gap: 8,
-        direction: "rtl",
-        fontFamily: "'Vazirmatn', Tahoma, sans-serif",
-      }}
-    >
+    <footer className="owj-app-footer">
       <span>
-        <strong style={{ color: T.textSec }}>املاک اوج</strong> · تحلیل بازار
-        مسکن · فقط داده‌های عمومی
+        <strong>املاک اوج</strong> · تحلیل بازار مسکن · فقط داده‌های عمومی
       </span>
-      <span>
-        امتیازها ابزارهای تصمیم‌گیری آزمایشی هستند، نه توصیه سرمایه‌گذاری.
-      </span>
+      <span>امتیازها ابزارهای تصمیم‌گیری آزمایشی هستند، نه توصیه سرمایه‌گذاری.</span>
     </footer>
   );
 }
 
-/* ══════════════════════════════════════════════════════════════════
-   LOADING PAGE
-   ══════════════════════════════════════════════════════════════════ */
 export function LoadingPage({ message = "در حال خواندن شواهد امتیازدهی" }) {
   useEffect(() => {
     injectGlobalCSS();
   }, []);
 
   return (
-    <main
-      style={{
-        direction: "rtl",
-        fontFamily: "'Vazirmatn', Tahoma, sans-serif",
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        minHeight: "100vh",
-        background: T.bgGradient,
-        color: T.text,
-        textAlign: "center",
-        padding: 40,
-        gap: 20,
-        animation: "owjFadeIn .3s ease",
-      }}
-    >
-      {/* Animated logo */}
-      <div
-        style={{
-          width: 72,
-          height: 72,
-          borderRadius: 20,
-          background: `linear-gradient(135deg, ${T.primary}, ${T.secondary})`,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          color: "#fff",
-          boxShadow: `0 8px 32px ${T.primaryGlow}`,
-          animation: "owjFloat 3s ease-in-out infinite",
-          marginBottom: 8,
-        }}
-      >
-        <Icon name="building" size={36} />
-      </div>
-
-      {/* Dots */}
-      <div style={{ display: "flex", gap: 10 }}>
-        {[0, 1, 2].map((i) => (
-          <span
-            key={i}
-            style={{
-              width: 12,
-              height: 12,
-              borderRadius: "50%",
-              background: i === 1 ? T.secondary : T.primary,
-              animation: `owjDot 1.3s ${i * 0.16}s infinite ease-in-out`,
-            }}
-          />
-        ))}
-      </div>
-
-      <h1 style={{ fontSize: 22, fontWeight: 800, color: T.white, margin: 0 }}>
-        {message}
-      </h1>
-      <p
-        style={{
-          fontSize: 14,
-          color: T.textSec,
-          margin: 0,
-          maxWidth: 420,
-          lineHeight: 1.7,
-        }}
-      >
-        در حال بارگذاری JSON امتیازدهی تولیدشده از سرور.
-      </p>
-    </main>
+    <>
+      <AppHeader />
+      <main className="owj-page-state" role="status" aria-live="polite">
+        <section className="owj-page-state__card">
+          <div className="owj-page-state__icon">
+            <Icon name="building" size={33} />
+          </div>
+          <div className="owj-page-state__dots" aria-hidden="true">
+            {[0, 1, 2].map((i) => <span key={i} />)}
+          </div>
+          <h1>{message}</h1>
+          <p>در حال بارگذاری JSON امتیازدهی تولیدشده از سرور.</p>
+        </section>
+      </main>
+    </>
   );
 }
 
-/* ══════════════════════════════════════════════════════════════════
-   ERROR PAGE
-   ══════════════════════════════════════════════════════════════════ */
 export function ErrorPage({ message }) {
   useEffect(() => {
     injectGlobalCSS();
   }, []);
 
   return (
-    <main
-      style={{
-        direction: "rtl",
-        fontFamily: "'Vazirmatn', Tahoma, sans-serif",
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        minHeight: "100vh",
-        background: T.bgGradient,
-        color: T.text,
-        textAlign: "center",
-        padding: 40,
-        gap: 20,
-        animation: "owjFadeIn .3s ease",
-      }}
-    >
-      <span
-        style={{
-          width: 72,
-          height: 72,
-          borderRadius: 20,
-          background: T.redBg,
-          border: `1px solid ${T.redBg2}`,
-          color: T.red,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          animation: "owjPulse 2.5s infinite",
-        }}
-      >
-        <Icon name="alert" size={32} />
-      </span>
-      <h1 style={{ fontSize: 22, fontWeight: 800, color: T.white, margin: 0 }}>
-        این صفحه بارگذاری نشد
-      </h1>
-      <p
-        style={{
-          fontSize: 14,
-          color: T.textSec,
-          margin: 0,
-          maxWidth: 480,
-          lineHeight: 1.7,
-          padding: "12px 18px",
-          background: T.surface,
-          border: `1px solid ${T.border}`,
-          borderRadius: T.radiusSm,
-        }}
-      >
-        {message}
-      </p>
-      <a
-        href="/"
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          gap: 8,
-          padding: "12px 26px",
-          borderRadius: T.radiusSm,
-          background: `linear-gradient(135deg, ${T.primary}, ${T.secondary})`,
-          color: "#fff",
-          fontSize: 14,
-          fontWeight: 700,
-          textDecoration: "none",
-          cursor: "pointer",
-          boxShadow: `0 4px 20px ${T.primaryGlow}`,
-          transition: "transform .2s, box-shadow .2s",
-        }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.transform = "translateY(-2px)";
-          e.currentTarget.style.boxShadow = `0 6px 28px ${T.primaryGlow}`;
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.transform = "translateY(0)";
-          e.currentTarget.style.boxShadow = `0 4px 20px ${T.primaryGlow}`;
-        }}
-      >
-        <Icon name="back" size={18} />
-        بازگشت به نمای کلی
-      </a>
-    </main>
+    <>
+      <AppHeader />
+      <main className="owj-page-state">
+        <section className="owj-page-state__card">
+          <span className="owj-page-state__icon owj-page-state__icon--error">
+            <Icon name="alert" size={30} />
+          </span>
+          <h1>این صفحه بارگذاری نشد</h1>
+          <p className="owj-page-error__message" role="alert">{message}</p>
+          <a className="owj-page-error__back" href="/">
+            <Icon name="back" size={18} />
+            بازگشت به نمای کلی
+          </a>
+        </section>
+      </main>
+    </>
   );
 }
 
-/* ══════════════════════════════════════════════════════════════════
-   SCORE BAR
-   ══════════════════════════════════════════════════════════════════ */
+/* Original score calculation and tone mapping retained. */
 export function ScoreBar({ value, tone = "cyan" }) {
   const toneMap = {
     cyan: `linear-gradient(90deg, ${T.secondaryDark}, ${T.secondary}, ${T.secondaryLight})`,
@@ -609,7 +615,7 @@ export function ScoreBar({ value, tone = "cyan" }) {
       style={{
         display: "block",
         height: 5,
-        background: T.border,
+        background: T.borderLight,
         borderRadius: 99,
         overflow: "hidden",
         width: "100%",

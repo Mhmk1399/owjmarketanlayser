@@ -1,5 +1,8 @@
+"use client";
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { SortableTh } from "./tableTools.jsx";
+import { AppHeader, AppNavigation } from "./shared.jsx";
 
 /* ──────────────────────── Formatters (unchanged logic) ──────────────────────── */
 const number = new Intl.NumberFormat("fa-IR");
@@ -30,7 +33,9 @@ function formatDuration(milliseconds) {
   const minutes = Math.floor(milliseconds / 60_000);
   const hours = Math.floor(minutes / 60);
   const remainder = minutes % 60;
-  return hours ? `${hours} ساعت و ${remainder} دقیقه` : `${minutes} دقیقه`;
+  return hours
+    ? `${formatNumber(hours)} ساعت و ${formatNumber(remainder)} دقیقه`
+    : `${formatNumber(minutes)} دقیقه`;
 }
 function formatMoney(value) {
   if (!Number.isFinite(value)) return "—";
@@ -40,114 +45,229 @@ function formatMoney(value) {
     return `${decimal.format(value / 1_000_000)} میلیون تومان`;
   return `${formatNumber(value)} تومان`;
 }
+// Only changes the visible characters; never changes API data, URLs or keys.
+function toPersianDigits(value) {
+  return String(value ?? "").replace(
+    /[0-9]/g,
+    (digit) => "۰۱۲۳۴۵۶۷۸۹"[Number(digit)],
+  );
+}
+
 function clamp(value) {
   return Math.max(0, Math.min(100, Number(value) || 0));
 }
 
-/* ──────────────────────── Design Tokens ──────────────────────── */
+/* ──────────────────────── Component design tokens ──────────────────────── */
 const T = {
   primary: "#66308d",
-  primaryLight: "#7f4aaa",
-  primaryPale: "#a06cc8",
-  primaryGlow: "rgba(102,48,141,0.35)",
-  primaryBg: "rgba(102,48,141,0.10)",
-  primaryBg2: "rgba(102,48,141,0.18)",
+  primaryLight: "#74479a",
+  primaryPale: "#926eae",
+  primaryGlow: "rgba(102,48,141,0.12)",
+  primaryBg: "#f4eef8",
+  primaryBg2: "#e9daef",
 
   secondary: "#01ae9b",
-  secondaryLight: "#19c5b2",
-  secondaryDark: "#019384",
-  secondaryGlow: "rgba(1,174,155,0.30)",
-  secondaryBg: "rgba(1,174,155,0.10)",
-  secondaryBg2: "rgba(1,174,155,0.18)",
+  secondaryLight: "#27c1ad",
+  secondaryDark: "#087a6e",
+  secondaryGlow: "rgba(1,174,155,0.10)",
+  secondaryBg: "#e8f8f5",
+  secondaryBg2: "#d2f0e9",
 
-  bg: "#0c0b10",
-  bgGradient: "linear-gradient(168deg, #0c0b10 0%, #110f18 40%, #0d1117 100%)",
-  surface: "#16141f",
-  surfaceLight: "#1e1b2a",
-  surfaceHover: "#241f34",
-  surfaceGlass: "rgba(22,20,31,0.75)",
-  raised: "#262237",
+  bg: "#f7f8fa",
+  bgGradient: "linear-gradient(180deg, #ffffff 0%, #f7f8fa 38%, #f7f8fa 100%)",
+  surface: "#ffffff",
+  surfaceLight: "#fbfbfc",
+  surfaceHover: "#f8f7fa",
+  surfaceGlass: "rgba(255,255,255,0.96)",
+  raised: "#f5f6f8",
 
-  border: "rgba(255,255,255,0.06)",
-  borderMed: "rgba(255,255,255,0.09)",
-  borderLight: "rgba(255,255,255,0.13)",
+  border: "#edeef1",
+  borderMed: "#e7e8ec",
+  borderLight: "#dcdfe5",
 
-  text: "#ede9f5",
-  textSec: "#a39bb5",
-  textMuted: "#6e6580",
+  text: "#202127",
+  textSec: "#60646e",
+  textMuted: "#6b707b",
 
-  white: "#ffffff",
-  green: "#34d399",
-  greenBg: "rgba(52,211,153,0.10)",
-  orange: "#fb923c",
-  orangeBg: "rgba(251,146,60,0.10)",
-  red: "#f87171",
-  redBg: "rgba(248,113,113,0.10)",
+  // Existing T.white references mark strong text, not white surfaces.
+  white: "#17191f",
+  green: "#14785f",
+  greenBg: "#eaf7f0",
+  orange: "#a9661b",
+  orangeBg: "#fff5e8",
+  red: "#b6404b",
+  redBg: "#fff0f1",
 
-  radius: 14,
-  radiusSm: 10,
-  radiusXs: 7,
+  radius: 18,
+  radiusSm: 13,
+  radiusXs: 10,
 
-  shadow: "0 4px 24px rgba(0,0,0,0.25), 0 1px 4px rgba(0,0,0,0.15)",
-  shadowLg: "0 8px 40px rgba(0,0,0,0.35)",
-  glowPrimary: `0 0 40px rgba(102,48,141,0.15)`,
-  glowSecondary: `0 0 40px rgba(1,174,155,0.12)`,
+  shadow: "0 4px 22px rgba(24,31,41,0.035), 0 1px 3px rgba(24,31,41,0.025)",
+  shadowLg: "0 12px 34px rgba(24,31,41,0.07)",
+  glowPrimary: "0 0 0 0 transparent",
+  glowSecondary: "0 0 0 0 transparent",
 };
 
-/* ──────────────────────── Global CSS Injection ──────────────────────── */
-const GLOBAL_CSS = `
-@import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700;800;900&display=swap');
+/* Component-local styles: intentionally no global document/head injection. */
+const COMPONENT_CSS = `
+  @import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700;800;900&display=swap');
+  .owj-dashboard,
+  .owj-dashboard *,
+  .owj-dashboard *::before,
+  .owj-dashboard *::after { box-sizing: border-box; }
+  .owj-dashboard { width:100%; min-width:0; overflow-x:clip; -webkit-font-smoothing:antialiased; }
+  .owj-dashboard button, .owj-dashboard input, .owj-dashboard select { font:inherit; }
+  .owj-dashboard button, .owj-dashboard a, .owj-dashboard select { -webkit-tap-highlight-color:transparent; }
+  .owj-dashboard button:focus-visible, .owj-dashboard a:focus-visible,
+  .owj-dashboard input:focus-visible, .owj-dashboard select:focus-visible,
+  .owj-dashboard summary:focus-visible { outline:3px solid rgba(102,48,141,.32); outline-offset:3px; }
+  .owj-dashboard input::placeholder { color:#8a8e98; opacity:1; }
+  .owj-dashboard input[type="checkbox"] { accent-color:#66308d; }
+  .owj-dashboard .owj-search-field:focus-within { border-color:#a785c2 !important; box-shadow:0 0 0 3px rgba(102,48,141,.09); }
+  .owj-dashboard .owj-search-input { min-width:0; font-size:14px !important; }
+  .owj-dashboard .owj-kpi-card, .owj-dashboard .owj-attention-card { min-width:0; }
+  .owj-dashboard .owj-panel { min-width:0; }
+  .owj-dashboard .owj-controls { min-width:0; }
+  .owj-dashboard .owj-table-wrap { max-width:100%; scrollbar-width:thin; scrollbar-color:#dbdce3 transparent; }
+  .owj-dashboard .owj-table-wrap::-webkit-scrollbar { height:6px; }
+  .owj-dashboard .owj-table-wrap::-webkit-scrollbar-thumb { background:#dfe1e8; border-radius:50px; }
+  .owj-dashboard .owj-nav { overflow:visible; }
+  .owj-dashboard .owj-nav a:hover { color:#66308d !important; background:#f4eef8 !important; }
+  .owj-dashboard .owj-icon-button:hover { color:#66308d !important; background:#f4eef8 !important; border-color:#e9daef !important; }
+  .owj-dashboard .owj-link:hover { color:#66308d !important; }
+  .owj-dashboard .owj-action-button:hover:not(:disabled) { background:#f5eff8 !important; color:#66308d !important; border-color:#e9daef !important; }
+  .owj-dashboard .owj-action-button:disabled { opacity:.55; cursor:not-allowed; }
+  .owj-dashboard .owj-mobile-sort { display:none; }
+  .owj-dashboard .owj-mobile-recommendations { display:none; }
+  .owj-dashboard .owj-hero-updated { display:none; }
+  .owj-dashboard .owj-mobile-empty { display:flex; align-items:center; justify-content:center; }
+  .owj-dashboard .owj-event-message { overflow-wrap:anywhere; }
+  .owj-dashboard .owj-raw-json summary::marker { content:""; }
+  .owj-dashboard .owj-raw-json summary::-webkit-details-marker { display:none; }
+  .owj-dashboard .owj-raw-json summary:hover { background:#faf9fb; }
+  .owj-dashboard .owj-raw-json[open] summary { border-bottom:1px solid #edeef1; }
+  @keyframes owjPulse { 0%,100% {opacity:1;} 50% {opacity:.5;} }
+  @keyframes owjDot { 0%,80%,100% {transform:scale(.6);opacity:.3;} 40% {transform:scale(1);opacity:1;} }
+  @keyframes owjSlideUp { from {opacity:0;transform:translateY(8px);} to {opacity:1;transform:translateY(0);} }
+  @keyframes owjFadeIn { from {opacity:0;} to {opacity:1;} }
 
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-:root {
-  --owj-primary: ${T.primary};
-  --owj-secondary: ${T.secondary};
-  font-family: 'Vazirmatn', Tahoma, sans-serif;
-}
-
-body { background: ${T.bg}; }
-
-::-webkit-scrollbar { width: 5px; height: 5px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: ${T.borderLight}; border-radius: 99px; }
-::-webkit-scrollbar-thumb:hover { background: ${T.textMuted}; }
-
-input::placeholder { color: ${T.textMuted}; font-family: inherit; }
-
-@keyframes owjPulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: .45; transform: scale(1.15); }
-}
-@keyframes owjFloat {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-6px); }
-}
-@keyframes owjDot {
-  0%, 80%, 100% { transform: scale(.5); opacity: .25; }
-  40% { transform: scale(1); opacity: 1; }
-}
-@keyframes owjShimmer {
-  0% { background-position: -200% 0; }
-  100% { background-position: 200% 0; }
-}
-@keyframes owjSlideUp {
-  from { opacity: 0; transform: translateY(16px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-@keyframes owjFadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
+  @media (max-width:1200px) {
+    .owj-dashboard .owj-topbar { gap:12px !important; padding:12px 22px !important; height:auto !important; min-height:70px; flex-wrap:wrap; }
+    .owj-dashboard .owj-nav { margin-right:0 !important; }
+    .owj-dashboard .owj-nav a { padding:9px 12px !important; }
+    .owj-dashboard .owj-main { padding-inline:22px !important; }
+    .owj-dashboard .owj-kpi-grid, .owj-dashboard .owj-attention-grid { grid-template-columns:repeat(2,minmax(0,1fr)) !important; }
+  }
+  @media (max-width:900px) {
+    .owj-dashboard .owj-topbar {
+      display:grid !important; grid-template-columns:minmax(0,1fr) auto;
+      grid-template-areas:"brand meta" "nav nav"; align-items:center; column-gap:12px !important;
+      row-gap:8px !important; padding:12px 20px 10px !important;
+    }
+    .owj-dashboard .owj-brand { grid-area:brand; min-width:0; }
+    .owj-dashboard .owj-nav { grid-area:nav; display:flex; flex:none !important; min-width:0; width:100%; overflow:visible; gap:5px !important; padding:3px 0 6px; white-space:nowrap; }
+    .owj-dashboard .owj-nav a { flex:none; padding:9px 14px !important; }
+    .owj-dashboard .owj-header-meta { grid-area:meta; gap:8px !important; }
+    .owj-dashboard .owj-meta-date { display:none !important; }
+    .owj-dashboard .owj-hero-updated { display:inline-flex; align-items:center; gap:7px; margin-top:13px; padding:9px 12px; border-radius:12px; background:#f0f1f4; color:#60646e; font-size:12px; }
+    .owj-dashboard .owj-hero { grid-template-columns:minmax(0,1fr) !important; gap:20px !important; padding:32px 0 24px !important; }
+    .owj-dashboard .owj-run-card { width:100%; padding:22px !important; }
+    .owj-dashboard .owj-detail-grid { grid-template-columns:minmax(0,1fr) !important; gap:18px !important; }
+    .owj-dashboard .owj-kpi-grid { gap:12px !important; margin-bottom:26px !important; }
+    .owj-dashboard .owj-attention-grid { gap:12px !important; }
+  }
+  @media (max-width:640px) {
+    .owj-dashboard { font-size:13px !important; line-height:1.65 !important; }
+    .owj-dashboard .owj-topbar { padding:12px 16px 9px !important; }
+    .owj-dashboard .owj-brand-icon { width:38px !important; height:38px !important; border-radius:12px !important; }
+    .owj-dashboard .owj-brand-subtitle { display:none !important; }
+    .owj-dashboard .owj-topbar-status { padding:6px 9px !important; font-size:11px !important; }
+    .owj-dashboard .owj-icon-button { width:44px !important; height:44px !important; }
+    .owj-dashboard .owj-nav { gap:6px !important; }
+    .owj-dashboard .owj-nav a { font-size:12px !important; padding:9px 11px !important; min-height:40px; display:inline-flex; align-items:center; }
+    .owj-dashboard .owj-main { padding:0 14px 46px !important; }
+    .owj-dashboard .owj-hero { padding:26px 0 22px !important; gap:18px !important; }
+    .owj-dashboard .owj-hero-copy h1 { font-size:clamp(24px,6.2vw,32px) !important; line-height:1.48 !important; }
+    .owj-dashboard .owj-hero-copy p { font-size:13px !important; line-height:1.9 !important; }
+    .owj-dashboard .owj-run-card { padding:19px !important; gap:14px !important; }
+    .owj-dashboard .owj-run-count { font-size:38px !important; }
+    .owj-dashboard .owj-kpi-grid { grid-template-columns:repeat(2,minmax(0,1fr)) !important; gap:9px !important; }
+    .owj-dashboard .owj-kpi-card { padding:16px 14px !important; gap:9px !important; border-top-width:1px !important; }
+    .owj-dashboard .owj-kpi-card > div:first-child > span:first-child { font-size:12px !important; }
+    .owj-dashboard .owj-kpi-card-value { font-size:clamp(21px,5vw,28px) !important; letter-spacing:0 !important; line-height:1.25 !important; overflow-wrap:anywhere; }
+    .owj-dashboard .owj-kpi-card-detail { flex-wrap:wrap !important; line-height:1.6; }
+    .owj-dashboard .owj-kpi-card-icon { width:34px !important; height:34px !important; }
+    .owj-dashboard .owj-attention-grid { grid-template-columns:minmax(0,1fr) !important; gap:10px !important; }
+    .owj-dashboard .owj-attention-card { padding:17px !important; gap:12px !important; }
+    .owj-dashboard .owj-attention-card-value { font-size:23px !important; }
+    .owj-dashboard .owj-panel { padding:18px 15px !important; margin-bottom:16px !important; }
+    .owj-dashboard .owj-section-heading { gap:10px !important; margin-bottom:18px !important; }
+    .owj-dashboard .owj-section-heading > div:first-child { min-width:0 !important; flex-basis:100%; }
+    .owj-dashboard .owj-section-heading h2 { font-size:18px !important; }
+    .owj-dashboard .owj-section-heading > div:first-child > span:first-child { font-size:12px !important; }
+    .owj-dashboard .owj-section-heading p { font-size:12px !important; line-height:1.85 !important; }
+    .owj-dashboard .owj-heading-aside { align-items:flex-start !important; }
+    .owj-dashboard .owj-heading-aside strong { font-size:24px !important; }
+    .owj-dashboard .owj-location-body { justify-content:center !important; gap:20px !important; }
+    .owj-dashboard .owj-controls { flex-direction:column !important; align-items:stretch !important; gap:12px !important; }
+    .owj-dashboard .owj-search-field { width:100% !important; min-width:0 !important; flex:none !important; min-height:48px; padding:10px 13px !important; }
+    .owj-dashboard .owj-search-input { font-size:16px !important; }
+    .owj-dashboard .owj-controls-result { align-self:flex-start; }
+    .owj-dashboard .owj-mobile-sort { display:flex; align-items:center; gap:10px; margin:12px 0 18px; flex-wrap:wrap; font-size:12px; color:#60646e; }
+    .owj-dashboard .owj-mobile-sort label { flex:1; min-width:170px; display:flex; align-items:center; gap:9px; }
+    .owj-dashboard .owj-mobile-sort select { flex:1; min-width:0; border:1px solid #e2e3e9; border-radius:12px; background:#fff; color:#202127; min-height:44px; padding:8px 12px; outline:none; cursor:pointer; }
+    .owj-dashboard .owj-mobile-sort button { border:1px solid #e2e3e9; border-radius:12px; background:#fff; color:#66308d; padding:8px 13px; min-height:44px; cursor:pointer; white-space:nowrap; }
+    /* The areas table becomes semantic, easy-to-scan cards on narrow screens. */
+    .owj-dashboard .owj-area-table-wrap { border:0 !important; overflow:visible !important; }
+    .owj-dashboard .owj-area-table, .owj-dashboard .owj-area-table tbody { display:block; width:100%; }
+    .owj-dashboard .owj-area-table thead { display:none; }
+    .owj-dashboard .owj-area-table tbody { display:grid; gap:10px; }
+    .owj-dashboard .owj-area-table tr { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); padding:14px; gap:12px 14px; border:1px solid #e9eaf0; border-radius:14px; background:white; }
+    .owj-dashboard .owj-area-table td { display:flex; flex-direction:column; gap:4px; padding:0 !important; border:0 !important; white-space:normal !important; min-width:0; font-size:13px; }
+    .owj-dashboard .owj-area-table td:first-child { grid-column:1/-1; padding-bottom:9px !important; border-bottom:1px solid #f0f0f3 !important; }
+    .owj-dashboard .owj-area-table td:not(:first-child)::before { content:attr(data-label); color:#6b707b; font-size:11px; font-weight:500; }
+    .owj-dashboard .owj-area-table td:last-child { align-items:flex-start; }
+    .owj-dashboard .owj-area-table td:first-child strong { font-size:14px !important; }
+    /* Desktop matrix becomes collapsible, finger-friendly listing cards. */
+    .owj-dashboard .owj-reco-desktop-table { display:none !important; }
+    .owj-dashboard .owj-mobile-recommendations { display:grid; gap:10px; margin-bottom:10px; }
+    .owj-dashboard .owj-mobile-recommendations details { background:#fff; border:1px solid #e8e9ed; border-radius:15px; overflow:hidden; }
+    .owj-dashboard .owj-mobile-recommendations details[open] { border-color:#d8c8e4; box-shadow:0 3px 15px rgba(102,48,141,.05); }
+    .owj-dashboard .owj-mobile-recommendations summary { list-style:none; display:flex; align-items:center; justify-content:space-between; gap:12px; padding:15px 13px; cursor:pointer; }
+    .owj-dashboard .owj-mobile-recommendations summary::-webkit-details-marker { display:none; }
+    .owj-dashboard .owj-mobile-recommendations summary > span { display:flex; flex-direction:column; gap:4px; flex:1; min-width:0; }
+    .owj-dashboard .owj-mobile-recommendations summary strong { font-size:13px; color:#202127; line-height:1.65; }
+    .owj-dashboard .owj-mobile-recommendations summary small { font-size:11px; color:#6b707b; overflow-wrap:anywhere; }
+    .owj-dashboard .owj-mobile-score { flex:none; min-width:59px; padding:9px 7px; border-radius:12px; background:#f4eef8; text-align:center; color:#66308d; font-weight:800; font-size:18px; line-height:1.3; }
+    .owj-dashboard .owj-mobile-score span { display:block; font-size:10px; color:#69616f; font-weight:500; margin-top:2px; }
+    .owj-dashboard .owj-mobile-factor-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; padding:14px 12px; background:#fcfcfd; border-top:1px solid #edeef1; }
+    .owj-dashboard .owj-mobile-factor { display:flex; flex-direction:column; gap:8px; min-width:0; padding:11px; background:#fff; border:1px solid #ededf0; border-radius:12px; }
+    .owj-dashboard .owj-mobile-factor > span:first-child { font-size:11px; color:#60646e; }
+    .owj-dashboard .owj-mobile-evidence { grid-column:1/-1; display:flex; gap:8px; font-size:12px; color:#60646e; align-items:center; padding:8px 2px; flex-wrap:wrap; }
+    .owj-dashboard .owj-view-listing { grid-column:1/-1; display:flex; justify-content:center; align-items:center; background:#66308d; color:#fff; text-decoration:none; padding:12px; border-radius:12px; font-size:13px; font-weight:700; min-height:46px; }
+    .owj-dashboard .owj-view-listing:hover { background:#552676; }
+    .owj-dashboard .owj-event-row { flex-wrap:wrap !important; align-items:center !important; padding:12px 8px !important; gap:7px 9px !important; border-bottom:1px solid #f0f0f3; }
+    .owj-dashboard .owj-event-message { display:block; flex-basis:100% !important; white-space:normal !important; overflow:visible !important; font-size:12px !important; padding-right:17px; }
+    .owj-dashboard .owj-event-time { order:2; margin-right:auto; font-family:inherit !important; }
+    .owj-dashboard .owj-event-name { order:1; }
+    .owj-dashboard .owj-event-message { order:3; }
+    .owj-dashboard .owj-raw-json summary { padding:15px !important; gap:10px; flex-wrap:wrap; }
+    .owj-dashboard .owj-raw-json pre { padding:15px !important; }
+    .owj-dashboard .owj-footer { padding:18px 16px 28px !important; }
+    .owj-dashboard .owj-state-title { font-size:20px !important; }
+  }
+  @media (max-width:359px) {
+    .owj-dashboard .owj-kpi-grid { grid-template-columns:minmax(0,1fr) !important; }
+    .owj-dashboard .owj-topbar-status { font-size:10px !important; }
+    .owj-dashboard .owj-mobile-factor-grid { grid-template-columns:1fr; }
+  }
+  @media (prefers-reduced-motion:reduce) {
+    .owj-dashboard *, .owj-dashboard *::before, .owj-dashboard *::after { animation-duration:0.01ms !important; transition-duration:0.01ms !important; scroll-behavior:auto !important; }
+  }
 `;
 
-let injected = false;
-function injectGlobalCSS() {
-  if (injected) return;
-  injected = true;
-  const el = document.createElement("style");
-  el.textContent = GLOBAL_CSS;
-  document.head.appendChild(el);
+function DashboardStyles() {
+  return <style>{COMPONENT_CSS}</style>;
 }
 
 /* ──────────────────────── Icon (unchanged) ──────────────────────── */
@@ -300,12 +420,13 @@ function KpiCard({ eyebrow, value, detail, progress, tone, icon }) {
 
   return (
     <article
+      className="owj-kpi-card"
       style={{
         background: T.surface,
         border: `1px solid ${T.border}`,
-        borderTop: `3px solid ${a.c}`,
+        borderTop: `2px solid ${a.c}`,
         borderRadius: T.radius,
-        padding: "22px 22px 18px",
+        padding: "22px 22px 19px",
         display: "flex",
         flexDirection: "column",
         gap: 10,
@@ -341,6 +462,7 @@ function KpiCard({ eyebrow, value, detail, progress, tone, icon }) {
           {eyebrow}
         </span>
         <span
+          className="owj-kpi-card-icon"
           style={{
             width: 38,
             height: 38,
@@ -357,6 +479,7 @@ function KpiCard({ eyebrow, value, detail, progress, tone, icon }) {
         </span>
       </div>
       <strong
+        className="owj-kpi-card-value"
         style={{
           fontSize: 30,
           fontWeight: 900,
@@ -368,6 +491,7 @@ function KpiCard({ eyebrow, value, detail, progress, tone, icon }) {
         {value}
       </strong>
       <div
+        className="owj-kpi-card-detail"
         style={{
           display: "flex",
           justifyContent: "space-between",
@@ -396,6 +520,7 @@ function KpiCard({ eyebrow, value, detail, progress, tone, icon }) {
 function SectionHeading({ kicker, title, description, aside }) {
   return (
     <div
+      className="owj-section-heading"
       style={{
         display: "flex",
         justifyContent: "space-between",
@@ -410,7 +535,7 @@ function SectionHeading({ kicker, title, description, aside }) {
           style={{
             fontSize: 11,
             fontWeight: 800,
-            color: T.secondary,
+            color: T.secondaryDark,
             letterSpacing: 1.2,
             marginBottom: 6,
             display: "block",
@@ -459,6 +584,7 @@ function AttentionCard({ tone, icon, title, value, text }) {
 
   return (
     <article
+      className="owj-attention-card"
       style={{
         background: T.surface,
         border: `1px solid ${T.border}`,
@@ -496,6 +622,7 @@ function AttentionCard({ tone, icon, title, value, text }) {
       </span>
       <div>
         <span
+          className="owj-attention-card-value"
           style={{
             fontSize: 26,
             fontWeight: 900,
@@ -539,6 +666,7 @@ function LocationQuality({ data }) {
 
   return (
     <article
+      className="owj-panel"
       style={{
         background: T.surface,
         border: `1px solid ${T.border}`,
@@ -553,6 +681,7 @@ function LocationQuality({ data }) {
         description="پین‌های دقیق بالاترین ارزش را دارند. پین‌های تقریبی در شعاع ۵۰۰ متری حریم خصوصی کار می‌کنند."
       />
       <div
+        className="owj-location-body"
         style={{
           display: "flex",
           gap: 32,
@@ -670,7 +799,9 @@ function LocationQuality({ data }) {
           <span style={{ fontSize: 13, color: T.textSec }}>
             تطابق منطقه درخواستی با جزئیات
           </span>
-          <strong style={{ fontSize: 17, fontWeight: 800, color: T.secondary }}>
+          <strong
+            style={{ fontSize: 17, fontWeight: 800, color: T.secondaryDark }}
+          >
             {formatPercent(data.areaMatchRate)}
           </strong>
         </div>
@@ -700,6 +831,7 @@ function ModelReadiness({ data }) {
 
   return (
     <article
+      className="owj-panel"
       style={{
         background: T.surface,
         border: `1px solid ${T.border}`,
@@ -750,7 +882,9 @@ function ModelReadiness({ data }) {
               ? "مدل آزمایشی فعال"
               : "در حال جمع‌آوری نمونه"}
           </strong>
-          <span style={{ fontSize: 12, color: T.textSec }}>{data.scope}</span>
+          <span style={{ fontSize: 12, color: T.textSec }}>
+            {toPersianDigits(data.scope)}
+          </span>
         </div>
       </div>
       {/* Global */}
@@ -839,7 +973,10 @@ function ModelReadiness({ data }) {
 function AreaCoverage({ data }) {
   const [query, setQuery] = useState("");
   const [shortfallsOnly, setShortfallsOnly] = useState(false);
-  const [areaSort, setAreaSort] = useState({ key: "shortfall", direction: "desc" });
+  const [areaSort, setAreaSort] = useState({
+    key: "shortfall",
+    direction: "desc",
+  });
   const [visible, setVisible] = useState(20);
   const filtered = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase("fa");
@@ -852,19 +989,30 @@ function AreaCoverage({ data }) {
       )
       .sort((left, right) => {
         const values = {
-          name: [left.name, right.name], discovered: [left.discovered, right.discovered],
-          target: [left.target, right.target], shortfall: [left.shortfall, right.shortfall],
-          duplicates: [left.duplicates, right.duplicates], status: [left.shortfall > 0 ? 0 : 1, right.shortfall > 0 ? 0 : 1],
+          name: [left.name, right.name],
+          discovered: [left.discovered, right.discovered],
+          target: [left.target, right.target],
+          shortfall: [left.shortfall, right.shortfall],
+          duplicates: [left.duplicates, right.duplicates],
+          status: [left.shortfall > 0 ? 0 : 1, right.shortfall > 0 ? 0 : 1],
         }[areaSort.key];
-        const result = typeof values?.[0] === "string"
-          ? values[0].localeCompare(values[1], "fa") : (values?.[0] ?? 0) - (values?.[1] ?? 0);
-        return result * (areaSort.direction === "desc" ? -1 : 1) || left.name.localeCompare(right.name, "fa");
+        const result =
+          typeof values?.[0] === "string"
+            ? values[0].localeCompare(values[1], "fa")
+            : (values?.[0] ?? 0) - (values?.[1] ?? 0);
+        return (
+          result * (areaSort.direction === "desc" ? -1 : 1) ||
+          left.name.localeCompare(right.name, "fa")
+        );
       });
   }, [data.areas, query, shortfallsOnly, areaSort]);
 
-  const changeAreaSort = (key) => setAreaSort((current) => ({
-    key, direction: current.key === key && current.direction === "asc" ? "desc" : "asc",
-  }));
+  const changeAreaSort = (key) =>
+    setAreaSort((current) => ({
+      key,
+      direction:
+        current.key === key && current.direction === "asc" ? "desc" : "asc",
+    }));
 
   useEffect(() => setVisible(20), [query, shortfallsOnly]);
 
@@ -878,13 +1026,14 @@ function AreaCoverage({ data }) {
   };
 
   return (
-    <section style={panelStyle}>
+    <section className="owj-panel" style={panelStyle}>
       <SectionHeading
         kicker={`صف ${formatNumber(data.areas?.length || 0)} محله منتخب`}
         title="پوشش کشف مناطق"
         description="این جدول فقط محله‌های منتخب را نشان می‌دهد؛ کمبود یعنی تعداد یافته‌شده از هدف پویای همان محله کمتر بوده است."
         aside={
           <div
+            className="owj-heading-aside"
             style={{
               display: "flex",
               flexDirection: "column",
@@ -896,7 +1045,7 @@ function AreaCoverage({ data }) {
               style={{
                 fontSize: 30,
                 fontWeight: 900,
-                color: T.secondary,
+                color: T.secondaryDark,
                 lineHeight: 1,
               }}
             >
@@ -910,6 +1059,7 @@ function AreaCoverage({ data }) {
       />
       {/* Tools */}
       <div
+        className="owj-controls"
         style={{
           display: "flex",
           gap: 12,
@@ -919,6 +1069,7 @@ function AreaCoverage({ data }) {
         }}
       >
         <label
+          className="owj-search-field"
           style={{
             display: "flex",
             alignItems: "center",
@@ -935,6 +1086,9 @@ function AreaCoverage({ data }) {
         >
           <Icon name="search" size={18} />
           <input
+            className="owj-search-input"
+            type="search"
+            aria-label="جستجوی منطقه یا شناسه"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="جستجوی منطقه یا slug"
@@ -975,13 +1129,39 @@ function AreaCoverage({ data }) {
           <span>فقط کمبودها</span>
         </label>
         <span
+          className="owj-controls-result"
           style={{ fontSize: 12, color: T.textMuted, whiteSpace: "nowrap" }}
         >
           {formatNumber(filtered.length)} نتیجه
         </span>
       </div>
+      <div className="owj-mobile-sort">
+        <label>
+          <span>ترتیب بر اساس</span>
+          <select
+            aria-label="مرتب‌سازی مناطق بر اساس"
+            value={areaSort.key}
+            onChange={(event) => changeAreaSort(event.target.value)}
+          >
+            <option value="shortfall">کمبود</option>
+            <option value="name">منطقه</option>
+            <option value="discovered">یافت‌شده</option>
+            <option value="target">هدف</option>
+            <option value="duplicates">تکراری</option>
+            <option value="status">وضعیت</option>
+          </select>
+        </label>
+        <button
+          type="button"
+          onClick={() => changeAreaSort(areaSort.key)}
+          aria-label="تغییر جهت مرتب‌سازی مناطق"
+        >
+          {areaSort.direction === "desc" ? "نزولی ↓" : "صعودی ↑"}
+        </button>
+      </div>
       {/* Table */}
       <div
+        className="owj-table-wrap owj-area-table-wrap"
         style={{
           overflowX: "auto",
           borderRadius: T.radiusSm,
@@ -989,6 +1169,7 @@ function AreaCoverage({ data }) {
         }}
       >
         <table
+          className="owj-area-table"
           style={{
             width: "100%",
             borderCollapse: "collapse",
@@ -998,21 +1179,33 @@ function AreaCoverage({ data }) {
         >
           <thead>
             <tr>
-              {[["name","منطقه"],["discovered","یافت‌شده"],["target","هدف"],["shortfall","کمبود"],["duplicates","تکراری"],["status","وضعیت"]].map(
-                ([key, h]) => (
-                  <SortableTh key={key} column={key} sort={areaSort} onSort={changeAreaSort}
-                    style={{
-                      padding: "12px 16px",
-                      fontSize: 11,
-                      fontWeight: 700,
-                      color: T.textMuted,
-                      background: T.raised,
-                      borderBottom: `1px solid ${T.border}`,
-                      textAlign: "right",
-                      whiteSpace: "nowrap",
-                    }}>{h}</SortableTh>
-                ),
-              )}
+              {[
+                ["name", "منطقه"],
+                ["discovered", "یافت‌شده"],
+                ["target", "هدف"],
+                ["shortfall", "کمبود"],
+                ["duplicates", "تکراری"],
+                ["status", "وضعیت"],
+              ].map(([key, h]) => (
+                <SortableTh
+                  key={key}
+                  column={key}
+                  sort={areaSort}
+                  onSort={changeAreaSort}
+                  style={{
+                    padding: "12px 16px",
+                    fontSize: 11,
+                    fontWeight: 700,
+                    color: T.textMuted,
+                    background: T.raised,
+                    borderBottom: `1px solid ${T.border}`,
+                    textAlign: "right",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {h}
+                </SortableTh>
+              ))}
             </tr>
           </thead>
           <tbody>
@@ -1034,7 +1227,7 @@ function AreaCoverage({ data }) {
                     e.currentTarget.style.background = "transparent";
                   }}
                 >
-                  <td style={tdBase}>
+                  <td data-label="منطقه" style={tdBase}>
                     <a
                       href={area.url || "#"}
                       target="_blank"
@@ -1050,7 +1243,7 @@ function AreaCoverage({ data }) {
                         dir="auto"
                         style={{ fontWeight: 700, color: T.text, fontSize: 13 }}
                       >
-                        {area.name}
+                        {toPersianDigits(area.name)}
                       </strong>
                       <span
                         style={{
@@ -1061,13 +1254,18 @@ function AreaCoverage({ data }) {
                           textAlign: "right",
                         }}
                       >
-                        {area.slug}
+                        {toPersianDigits(area.slug)}
                       </span>
                     </a>
                   </td>
-                  <td style={tdBase}>{formatNumber(area.discovered)}</td>
-                  <td style={tdBase}>{formatNumber(area.target)}</td>
+                  <td data-label="یافت‌شده" style={tdBase}>
+                    {formatNumber(area.discovered)}
+                  </td>
+                  <td data-label="هدف" style={tdBase}>
+                    {formatNumber(area.target)}
+                  </td>
                   <td
+                    data-label="کمبود"
                     style={{
                       ...tdBase,
                       color: area.shortfall ? T.orange : T.textSec,
@@ -1076,8 +1274,10 @@ function AreaCoverage({ data }) {
                   >
                     {formatNumber(area.shortfall)}
                   </td>
-                  <td style={tdBase}>{formatNumber(area.duplicates)}</td>
-                  <td style={tdBase}>
+                  <td data-label="تکراری" style={tdBase}>
+                    {formatNumber(area.duplicates)}
+                  </td>
+                  <td data-label="وضعیت" style={tdBase}>
                     <span
                       style={{
                         display: "inline-flex",
@@ -1098,8 +1298,23 @@ function AreaCoverage({ data }) {
           </tbody>
         </table>
       </div>
+      {!filtered.length && (
+        <div
+          className="owj-mobile-empty"
+          role="status"
+          style={{
+            color: T.textSec,
+            padding: "24px 12px",
+            textAlign: "center",
+            fontSize: 13,
+          }}
+        >
+          منطقه‌ای مطابق جستجوی شما پیدا نشد.
+        </div>
+      )}
       {visible < filtered.length && (
         <button
+          className="owj-action-button"
           style={{
             display: "block",
             width: "100%",
@@ -1221,7 +1436,7 @@ function FactorScore({ value, weight, inverse = false }) {
       title={
         weight
           ? `${decimal.format(value * weight)} امتیاز وزنی`
-          : `${value} امتیاز`
+          : `${formatNumber(value)} امتیاز`
       }
     >
       <div style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
@@ -1441,13 +1656,14 @@ function Recommendations({ data }) {
   };
 
   return (
-    <section style={panelStyle}>
+    <section className="owj-panel" style={panelStyle}>
       <SectionHeading
         kicker="سیستم پیشنهاد"
         title="جزئیات امتیازدهی آگهی‌ها"
         description="مدل هدانیک cross-fit و مقایسه‌های تعدیل‌شده ارزش معامله را می‌سازند؛ دروازه‌های اطمینان و ریسک فقط امتیاز نهایی را کاهش می‌دهند."
         aside={
           <div
+            className="owj-heading-aside"
             style={{
               display: "flex",
               flexDirection: "column",
@@ -1477,6 +1693,7 @@ function Recommendations({ data }) {
       />
       {/* Search */}
       <div
+        className="owj-controls"
         style={{
           display: "flex",
           gap: 12,
@@ -1486,6 +1703,7 @@ function Recommendations({ data }) {
         }}
       >
         <label
+          className="owj-search-field"
           style={{
             display: "flex",
             alignItems: "center",
@@ -1501,6 +1719,9 @@ function Recommendations({ data }) {
         >
           <Icon name="search" size={18} />
           <input
+            className="owj-search-input"
+            type="search"
+            aria-label="جستجوی آگهی، توکن یا محله"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="جستجوی آگهی، توکن یا محله"
@@ -1517,6 +1738,9 @@ function Recommendations({ data }) {
           />
         </label>
         <span
+          className="owj-controls-result"
+          role="status"
+          aria-live="polite"
           style={{ fontSize: 12, color: T.textMuted, whiteSpace: "nowrap" }}
         >
           {tableLoading
@@ -1524,8 +1748,36 @@ function Recommendations({ data }) {
             : `${formatNumber(rows.length)} از ${formatNumber(filteredTotal)} آگهی`}
         </span>
       </div>
+      <div className="owj-mobile-sort">
+        <label>
+          <span>ترتیب بر اساس</span>
+          <select
+            aria-label="مرتب‌سازی آگهی‌ها بر اساس"
+            value={sort.key}
+            onChange={(event) => changeSort(event.target.value)}
+          >
+            <option value="recommendation">امتیاز نهایی</option>
+            <option value="listing">عنوان آگهی</option>
+            {SCORE_FACTORS.map((factor) => (
+              <option key={factor.key} value={factor.key}>
+                {factor.label}
+              </option>
+            ))}
+            <option value="modelDiscountPct">تخفیف مدل</option>
+            <option value="nearbyDiscountPct">تخفیف نزدیک</option>
+          </select>
+        </label>
+        <button
+          type="button"
+          onClick={() => changeSort(sort.key)}
+          aria-label="تغییر جهت مرتب‌سازی آگهی‌ها"
+        >
+          {sort.direction === "desc" ? "نزولی ↓" : "صعودی ↑"}
+        </button>
+      </div>
       {/* Table */}
       <div
+        className="owj-table-wrap owj-reco-desktop-table"
         style={{
           overflowX: "auto",
           borderRadius: T.radiusSm,
@@ -1558,7 +1810,7 @@ function Recommendations({ data }) {
                 <th
                   key={f.key}
                   style={thStyle}
-                  title={`${f.description}${f.weight ? ` · وزن ${f.weight * 100}٪` : ""}`}
+                  title={`${f.description}${f.weight ? ` · وزن ${formatNumber(f.weight * 100)}٪` : ""}`}
                 >
                   <SortHeading column={f.key}>
                     {f.short}
@@ -1571,7 +1823,7 @@ function Recommendations({ data }) {
                           fontWeight: 400,
                         }}
                       >
-                        {f.weight * 100}٪
+                        {formatNumber(f.weight * 100)}٪
                       </small>
                     )}
                   </SortHeading>
@@ -1635,13 +1887,13 @@ function Recommendations({ data }) {
                         dir="auto"
                         style={{ fontWeight: 700, color: T.text, fontSize: 13 }}
                       >
-                        {item.title || item.token}
+                        {toPersianDigits(item.title || item.token)}
                       </strong>
                       <span
                         dir="auto"
                         style={{ fontSize: 12, color: T.textSec }}
                       >
-                        {item.neighborhood || "منطقه نامشخص"} ·{" "}
+                        {toPersianDigits(item.neighborhood || "منطقه نامشخص")} ·{" "}
                         {formatNumber(item.property?.area ?? item.area)} متر ·{" "}
                         {formatMoney(
                           item.asking?.askingPrice ?? item.askingPrice,
@@ -1656,7 +1908,7 @@ function Recommendations({ data }) {
                           textAlign: "right",
                         }}
                       >
-                        {item.token} ·{" "}
+                        {toPersianDigits(item.token)} ·{" "}
                         {item.location?.accuracy ??
                           item.coordinateAccuracy ??
                           "نامشخص"}
@@ -1748,8 +2000,84 @@ function Recommendations({ data }) {
           </tbody>
         </table>
       </div>
+      <div className="owj-mobile-recommendations" aria-label="فهرست آگهی‌ها">
+        {rows.map((item) => {
+          const rec = scoreMetric(item, "recommendation");
+          return (
+            <details key={item.token}>
+              <summary>
+                <span>
+                  <strong dir="auto">
+                    {toPersianDigits(item.title || item.token)}
+                  </strong>
+                  <small>
+                    {toPersianDigits(item.neighborhood || "منطقه نامشخص")} ·{" "}
+                    {formatNumber(item.property?.area ?? item.area)} متر
+                  </small>
+                  <small>
+                    {formatMoney(item.asking?.askingPrice ?? item.askingPrice)}
+                  </small>
+                  <small style={{ color: T.primary }}>
+                    برای دیدن جزئیات لمس کنید
+                  </small>
+                </span>
+                <div
+                  className="owj-mobile-score"
+                  aria-label={`امتیاز نهایی ${formatNumber(rec)}`}
+                >
+                  {formatNumber(rec)}
+                  <span>امتیاز نهایی</span>
+                </div>
+              </summary>
+              <div className="owj-mobile-factor-grid">
+                {SCORE_FACTORS.map((factor) => (
+                  <div className="owj-mobile-factor" key={factor.key}>
+                    <span>{factor.label}</span>
+                    <FactorScore
+                      value={scoreMetric(item, factor.key)}
+                      weight={factor.weight}
+                      inverse={factor.inverse}
+                    />
+                  </div>
+                ))}
+                <div className="owj-mobile-factor">
+                  <span>تخفیف نسبت به مدل</span>
+                  <GapValue value={scoreMetric(item, "modelDiscountPct")} />
+                </div>
+                <div className="owj-mobile-factor">
+                  <span>تخفیف نزدیک</span>
+                  <GapValue value={scoreMetric(item, "nearbyDiscountPct")} />
+                </div>
+                <div className="owj-mobile-evidence">
+                  <Icon name="database" size={16} />
+                  <strong>
+                    {formatNumber(
+                      item.evidence?.comparableCount ??
+                        item.prediction?.modelSampleCount,
+                    )}
+                  </strong>
+                  <span>{item.evidence ? "مقایسه" : "نمونه"}</span>
+                  <span>·</span>
+                  <span>
+                    {item.evidence
+                      ? `${formatPercent(item.evidence.valuationValidationMedianErrorPct ?? item.evidence.modelValidationMedianErrorPct)} خطای میانه`
+                      : `${formatNumber(item.nearby?.count)} همسایه`}
+                  </span>
+                </div>
+                <a
+                  className="owj-view-listing"
+                  href={`/listing/${encodeURIComponent(item.token)}`}
+                >
+                  مشاهده آگهی
+                </a>
+              </div>
+            </details>
+          );
+        })}
+      </div>
       {pipelineAvailable && rows.length < filteredTotal && (
         <button
+          className="owj-action-button"
           onClick={loadMore}
           disabled={tableLoading}
           style={{
@@ -1817,7 +2145,7 @@ function EventStream({ events }) {
   const levelColors = { info: T.secondary, warn: T.orange, error: T.red };
 
   return (
-    <section style={panelStyle}>
+    <section className="owj-panel" style={panelStyle}>
       <SectionHeading
         kicker="مانیتورینگ"
         title="رویدادهای اخیر سرور"
@@ -1826,6 +2154,7 @@ function EventStream({ events }) {
       <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
         {(events || []).slice(0, 12).map((event, index) => (
           <div
+            className="owj-event-row"
             key={`${event.timestamp}-${event.event}-${index}`}
             style={{
               display: "flex",
@@ -1852,6 +2181,7 @@ function EventStream({ events }) {
               }}
             />
             <time
+              className="owj-event-time"
               style={{
                 fontSize: 11,
                 color: T.textMuted,
@@ -1863,6 +2193,7 @@ function EventStream({ events }) {
               {formatTime(event.timestamp)}
             </time>
             <strong
+              className="owj-event-name"
               style={{
                 fontWeight: 700,
                 color: T.text,
@@ -1870,9 +2201,10 @@ function EventStream({ events }) {
                 fontSize: 13,
               }}
             >
-              {event.event}
+              {toPersianDigits(event.event)}
             </strong>
             <span
+              className="owj-event-message"
               style={{
                 color: T.textSec,
                 flex: 1,
@@ -1882,7 +2214,7 @@ function EventStream({ events }) {
                 fontSize: 13,
               }}
             >
-              {event.message}
+              {toPersianDigits(event.message)}
             </span>
           </div>
         ))}
@@ -1893,106 +2225,122 @@ function EventStream({ events }) {
 
 /* ──────────────────────── Loading / Error ──────────────────────── */
 function LoadingState() {
-  injectGlobalCSS();
   return (
-    <main
-      style={{
-        direction: "rtl",
-        fontFamily: "'Vazirmatn', Tahoma, sans-serif",
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        minHeight: "100vh",
-        background: T.bgGradient,
-        color: T.text,
-        textAlign: "center",
-        padding: 40,
-        gap: 20,
-      }}
-    >
-      <div style={{ display: "flex", gap: 10 }}>
-        {[0, 1, 2].map((i) => (
-          <span
-            key={i}
-            style={{
-              width: 14,
-              height: 14,
-              borderRadius: "50%",
-              background: i === 1 ? T.secondary : T.primary,
-              animation: `owjDot 1.3s ${i * 0.16}s infinite ease-in-out`,
-            }}
-          />
-        ))}
-      </div>
-      <h1 style={{ fontSize: 22, fontWeight: 800, color: T.white, margin: 0 }}>
-        خواندن تله‌متری بازار
-      </h1>
-      <p style={{ fontSize: 14, color: T.textSec, margin: 0 }}>
-        ترکیب آخرین خزش، آگهی‌ها، کیفیت مختصات و وضعیت مدل.
-      </p>
-    </main>
+    <>
+      <AppHeader active="overview" />
+      <main
+        className="owj-dashboard owj-state"
+        style={{
+          direction: "rtl",
+          fontFamily: "'Vazirmatn', Tahoma, sans-serif",
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          minHeight: "100vh",
+          background: T.bgGradient,
+          color: T.text,
+          textAlign: "center",
+          padding: 40,
+          gap: 20,
+        }}
+      >
+        <DashboardStyles />
+        <div style={{ display: "flex", gap: 10 }}>
+          {[0, 1, 2].map((i) => (
+            <span
+              key={i}
+              style={{
+                width: 14,
+                height: 14,
+                borderRadius: "50%",
+                background: i === 1 ? T.secondary : T.primary,
+                animation: `owjDot 1.3s ${i * 0.16}s infinite ease-in-out`,
+              }}
+            />
+          ))}
+        </div>
+        <h1
+          className="owj-state-title"
+          style={{ fontSize: 22, fontWeight: 800, color: T.white, margin: 0 }}
+        >
+          خواندن تله‌متری بازار
+        </h1>
+        <p style={{ fontSize: 14, color: T.textSec, margin: 0 }}>
+          ترکیب آخرین خزش، آگهی‌ها، کیفیت مختصات و وضعیت مدل.
+        </p>
+      </main>
+    </>
   );
 }
 
 function ErrorState({ error, retry }) {
-  injectGlobalCSS();
   return (
-    <main
-      style={{
-        direction: "rtl",
-        fontFamily: "'Vazirmatn', Tahoma, sans-serif",
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        minHeight: "100vh",
-        background: T.bgGradient,
-        color: T.text,
-        textAlign: "center",
-        padding: 40,
-        gap: 20,
-      }}
-    >
-      <span
+    <>
+      <AppHeader active="overview" />
+      <main
+        className="owj-dashboard owj-state"
         style={{
-          width: 60,
-          height: 60,
-          borderRadius: 16,
-          background: T.redBg,
-          color: T.red,
+          direction: "rtl",
+          fontFamily: "'Vazirmatn', Tahoma, sans-serif",
           display: "flex",
+          flexDirection: "column",
           alignItems: "center",
           justifyContent: "center",
+          minHeight: "100vh",
+          background: T.bgGradient,
+          color: T.text,
+          textAlign: "center",
+          padding: 40,
+          gap: 20,
         }}
       >
-        <Icon name="alert" size={28} />
-      </span>
-      <h1 style={{ fontSize: 22, fontWeight: 800, color: T.white, margin: 0 }}>
-        داده‌های داشبورد در دسترس نیست
-      </h1>
-      <p style={{ fontSize: 14, color: T.textSec, margin: 0 }}>{error}</p>
-      <button
-        onClick={retry}
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          gap: 8,
-          padding: "12px 28px",
-          borderRadius: T.radiusSm,
-          border: "none",
-          background: `linear-gradient(135deg, ${T.primary}, ${T.secondary})`,
-          color: "#fff",
-          fontSize: 14,
-          fontWeight: 700,
-          cursor: "pointer",
-          fontFamily: "inherit",
-          boxShadow: `0 4px 20px ${T.primaryGlow}`,
-        }}
-      >
-        <Icon name="refresh" size={18} /> تلاش مجدد
-      </button>
-    </main>
+        <DashboardStyles />
+        <span
+          style={{
+            width: 60,
+            height: 60,
+            borderRadius: 16,
+            background: T.redBg,
+            color: T.red,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <Icon name="alert" size={28} />
+        </span>
+        <h1
+          className="owj-state-title"
+          style={{ fontSize: 22, fontWeight: 800, color: T.white, margin: 0 }}
+        >
+          داده‌های داشبورد در دسترس نیست
+        </h1>
+        <p style={{ fontSize: 14, color: T.textSec, margin: 0 }}>
+          {toPersianDigits(error)}
+        </p>
+        <button
+          onClick={retry}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 8,
+            padding: "12px 28px",
+            borderRadius: T.radiusSm,
+            border: "none",
+            background: T.primary,
+            color: "#fff",
+            fontSize: 14,
+            fontWeight: 700,
+            cursor: "pointer",
+            fontFamily: "inherit",
+            boxShadow: `0 4px 20px ${T.primaryGlow}`,
+          }}
+        >
+          <Icon name="refresh" size={18} /> تلاش مجدد
+        </button>
+      </main>
+    </>
   );
 }
 
@@ -2003,8 +2351,6 @@ export default function AnalyticsDashboard({
   endpoint = "/dashboard",
   refreshMs = 30_000,
 }) {
-  injectGlobalCSS();
-
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -2077,6 +2423,7 @@ export default function AnalyticsDashboard({
 
   return (
     <div
+      className="owj-dashboard"
       style={{
         direction: "rtl",
         fontFamily: "'Vazirmatn', Tahoma, sans-serif",
@@ -2087,8 +2434,10 @@ export default function AnalyticsDashboard({
         lineHeight: 1.7,
       }}
     >
+      <DashboardStyles />
       {/* ═══ TOPBAR ═══ */}
       <header
+        className="owj-topbar"
         style={{
           position: "sticky",
           top: 0,
@@ -2106,6 +2455,7 @@ export default function AnalyticsDashboard({
       >
         {/* Brand */}
         <a
+          className="owj-brand"
           href="/"
           style={{
             display: "flex",
@@ -2117,11 +2467,12 @@ export default function AnalyticsDashboard({
           }}
         >
           <span
+            className="owj-brand-icon"
             style={{
               width: 40,
               height: 40,
               borderRadius: 12,
-              background: `linear-gradient(135deg, ${T.primary} 0%, ${T.secondary} 100%)`,
+              background: T.primary,
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
@@ -2151,6 +2502,7 @@ export default function AnalyticsDashboard({
               املاک اوج
             </strong>
             <small
+              className="owj-brand-subtitle"
               style={{ fontSize: 11, color: T.textMuted, fontWeight: 400 }}
             >
               رصدخانه بازار مسکن
@@ -2159,40 +2511,11 @@ export default function AnalyticsDashboard({
         </a>
 
         {/* Nav */}
-        <nav
-          style={{ display: "flex", gap: 4, marginRight: 16, flex: 1 }}
-          aria-label="ناوبری اصلی"
-        >
-          {[
-            { label: "نمای کلی", href: "/", active: true },
-            { label: "کاوش مناطق", href: "/explore/tehran", active: false },
-            { label: "تحلیل امتیاز", href: "/score-analytics", active: false },
-            { label: "کارگاه امتیاز", href: "/score-workshop", active: false },
-          ].map((link) => (
-            <a
-              key={link.href}
-              href={link.href}
-              style={{
-                padding: "8px 18px",
-                borderRadius: 8,
-                fontSize: 13,
-                fontWeight: link.active ? 700 : 500,
-                color: link.active ? T.white : T.textSec,
-                textDecoration: "none",
-                background: link.active ? T.primaryBg : "transparent",
-                transition: "all .2s",
-                border: link.active
-                  ? `1px solid ${T.primaryBg2}`
-                  : "1px solid transparent",
-              }}
-            >
-              {link.label}
-            </a>
-          ))}
-        </nav>
+        <AppNavigation active="overview" className="owj-nav" />
 
         {/* Meta */}
         <div
+          className="owj-header-meta"
           style={{
             display: "flex",
             alignItems: "center",
@@ -2201,6 +2524,7 @@ export default function AnalyticsDashboard({
           }}
         >
           <span
+            className="owj-topbar-status"
             style={{
               display: "inline-flex",
               alignItems: "center",
@@ -2226,10 +2550,14 @@ export default function AnalyticsDashboard({
             />
             {statusLabels[crawl.status] || crawl.status}
           </span>
-          <span style={{ fontSize: 12, color: T.textMuted }}>
+          <span
+            className="owj-meta-date"
+            style={{ fontSize: 12, color: T.textMuted }}
+          >
             بروزرسانی: {formatTime(data.sourceUpdatedAt || data.generatedAt)}
           </span>
           <button
+            className="owj-icon-button"
             onClick={() => load()}
             disabled={refreshing}
             title="بازخوانی داشبورد"
@@ -2254,10 +2582,12 @@ export default function AnalyticsDashboard({
 
       {/* ═══ MAIN CONTENT ═══ */}
       <main
+        className="owj-main"
         style={{ maxWidth: 1400, margin: "0 auto", padding: "0 28px 80px" }}
       >
         {/* ─── Hero ─── */}
         <section
+          className="owj-hero"
           style={{
             display: "grid",
             gridTemplateColumns: "1fr 360px",
@@ -2266,7 +2596,10 @@ export default function AnalyticsDashboard({
             alignItems: "center",
           }}
         >
-          <div style={{ animation: "owjSlideUp .6s ease both" }}>
+          <div
+            className="owj-hero-copy"
+            style={{ animation: "owjSlideUp .6s ease both" }}
+          >
             <span
               style={{
                 display: "inline-flex",
@@ -2274,7 +2607,7 @@ export default function AnalyticsDashboard({
                 gap: 8,
                 fontSize: 13,
                 fontWeight: 700,
-                color: T.secondary,
+                color: T.secondaryDark,
                 marginBottom: 14,
               }}
             >
@@ -2291,14 +2624,11 @@ export default function AnalyticsDashboard({
                 letterSpacing: -0.5,
               }}
             >
-              ببینید آیا داده‌های بازار{" "}
+                آیا داده‌های بازار{" "}
               <em
                 style={{
                   fontStyle: "normal",
-                  background: `linear-gradient(135deg, ${T.primaryLight}, ${T.secondary})`,
-                  WebkitBackgroundClip: "text",
-                  WebkitTextFillColor: "transparent",
-                  backgroundClip: "text",
+                  color: T.primary,
                 }}
               >
                 قابل اعتماد هستند.
@@ -2316,10 +2646,18 @@ export default function AnalyticsDashboard({
               یک نمای عملیاتی از پوشش جمع‌آوری، دقت موقعیت، آمادگی مدل و
               آگهی‌هایی که ارزش بررسی دارند.
             </p>
+            <div className="owj-hero-updated">
+              <Icon name="refresh" size={14} />
+              <span>آخرین بروزرسانی:</span>
+              <time>
+                {formatTime(data.sourceUpdatedAt || data.generatedAt)}
+              </time>
+            </div>
           </div>
 
           {/* Run Card */}
           <div
+            className="owj-run-card"
             style={{
               background: T.surface,
               border: `1px solid ${T.border}`,
@@ -2366,11 +2704,12 @@ export default function AnalyticsDashboard({
                   borderRadius: 6,
                 }}
               >
-                {crawl.runId?.slice(0, 8) || "—"}
+                {toPersianDigits(crawl.runId?.slice(0, 8) || "—")}
               </strong>
             </div>
             <div style={{ textAlign: "center", padding: "8px 0" }}>
               <strong
+                className="owj-run-count"
                 style={{
                   fontSize: 44,
                   fontWeight: 900,
@@ -2419,6 +2758,7 @@ export default function AnalyticsDashboard({
 
         {/* ─── KPI Grid ─── */}
         <section
+          className="owj-kpi-grid"
           style={{
             display: "grid",
             gridTemplateColumns: "repeat(4, 1fr)",
@@ -2469,6 +2809,7 @@ export default function AnalyticsDashboard({
             description="اعدادی که می‌توانند تصمیمات جمع‌آوری یا مدل‌سازی را تغییر دهند."
           />
           <div
+            className="owj-attention-grid"
             style={{
               display: "grid",
               gridTemplateColumns: "repeat(4, 1fr)",
@@ -2516,6 +2857,7 @@ export default function AnalyticsDashboard({
 
         {/* ─── Split: Location + Model ─── */}
         <section
+          className="owj-detail-grid"
           style={{
             display: "grid",
             gridTemplateColumns: "1fr 1fr",
@@ -2542,6 +2884,7 @@ export default function AnalyticsDashboard({
 
         {/* ─── Raw JSON ─── */}
         <details
+          className="owj-raw-json"
           style={{
             background: T.surface,
             border: `1px solid ${T.border}`,
@@ -2592,6 +2935,7 @@ export default function AnalyticsDashboard({
 
       {/* ═══ FOOTER ═══ */}
       <footer
+        className="owj-footer"
         style={{
           display: "flex",
           justifyContent: "space-between",

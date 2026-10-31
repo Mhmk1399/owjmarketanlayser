@@ -64,7 +64,6 @@ const T = {
 
 /* ──────────────────────── Global CSS (once) ──────────────────────── */
 const GLOBAL_CSS = `
-@import url('https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;600;700;800;900&display=swap');
 *, *::before, *::after { box-sizing: border-box; }
 body { background: ${T.bg}; margin: 0; }
 ::-webkit-scrollbar { width: 5px; height: 5px; }
@@ -351,7 +350,7 @@ function PropertyFacts({ item }) {
         <span
           dir="ltr"
           style={{
-            fontFamily: "monospace",
+            fontFamily: "var(--font-family)",
             fontSize: 13,
             color: T.white,
             flex: 1,
@@ -600,7 +599,7 @@ function ScoreFactors({ item }) {
             <code
               dir="ltr"
               style={{
-                fontFamily: "monospace",
+                fontFamily: "var(--font-family)",
                 fontSize: 12,
                 color: row.highlight ? T.white : T.text,
                 background: row.highlight ? "transparent" : T.surface,
@@ -869,7 +868,7 @@ export default function ScoreDetailPage({ token }) {
     <div
       style={{
         direction: "rtl",
-        fontFamily: "'Vazirmatn', Tahoma, sans-serif",
+        fontFamily: "var(--font-family)",
         background: T.bgGradient,
         color: T.text,
         minHeight: "100vh",
@@ -1049,7 +1048,7 @@ export default function ScoreDetailPage({ token }) {
               <span
                 style={{
                   fontSize: 11,
-                  fontFamily: "monospace",
+                  fontFamily: "var(--font-family)",
                   color: T.textMuted,
                   padding: "4px 12px",
                   borderRadius: 6,
@@ -1488,7 +1487,7 @@ export default function ScoreDetailPage({ token }) {
               direction: "ltr",
               textAlign: "left",
               lineHeight: 1.6,
-              fontFamily: "monospace",
+              fontFamily: "var(--font-family)",
             }}
           >
             {JSON.stringify(data, null, 2)}

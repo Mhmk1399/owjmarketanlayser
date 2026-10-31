@@ -6,6 +6,7 @@ COPY package.json package-lock.json ./
 RUN npm ci
 
 COPY dashboard ./dashboard
+COPY next-persian-fonts/sahel ./next-persian-fonts/sahel
 COPY public ./public
 COPY schemas ./schemas
 COPY scripts ./scripts

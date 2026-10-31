@@ -1,0 +1,28 @@
+@font-face {
+  font-family: "Sahel";
+  src: url("../../next-persian-fonts/sahel/Sahel-VF.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400 900;
+  font-display: swap;
+}
+
+:root {
+  --font-family: "Sahel", Tahoma, sans-serif;
+}
+
+html {
+  font-family: var(--font-family);
+}
+
+button,
+input,
+optgroup,
+option,
+select,
+textarea,
+code,
+kbd,
+pre,
+samp {
+  font-family: inherit;
+}

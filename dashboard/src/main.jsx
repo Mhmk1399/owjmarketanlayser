@@ -7,6 +7,7 @@ import ScoringWorkshopPage from "./ScoringWorkshopPage.jsx";
 import ListingsPage from "./ListingsPage.jsx";
 import SavedListingDetailPage from "./SavedListingDetailPage.jsx";
 import DataQualityPage from "./DataQualityPage.jsx";
+import "./typography.css";
 import "./styles.css";
 
 function AppRouter() {

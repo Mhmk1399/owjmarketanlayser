@@ -25,6 +25,7 @@ const STATIC_TYPES = {
   ".js": "text/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".svg": "image/svg+xml",
+  ".woff2": "font/woff2",
 };
 
 async function readJson(file, fallback = null) {
@@ -209,7 +210,10 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
         return sendJson(response, 200, facets);
       }
 
-      if (request.method === "GET" && url.pathname === "/data-quality") {
+      const isDataQualityRequest = url.pathname === "/data-quality-data" || (
+        url.pathname === "/data-quality" && !request.headers.accept?.includes("text/html")
+      );
+      if (request.method === "GET" && isDataQualityRequest) {
         const [scoredDocument, scoringReport] = await Promise.all([
           readScoredDocument(), readJson(config.paths.scoringReport, null),
         ]);
