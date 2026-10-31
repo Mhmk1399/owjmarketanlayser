@@ -5,6 +5,7 @@ import { CrawlRun, ServiceState } from "../models/crawlState.js";
 import { ScoringScenario } from "../models/scoringScenario.js";
 import { JsonMarketStore, _jsonHelpers } from "./jsonStore.js";
 import { nextLifecycleStatus } from "../collector/listingPolicy.js";
+import { normalizeListingPage } from "./listingPagination.js";
 
 function plain(value) {
   return JSON.parse(JSON.stringify(value));
@@ -41,7 +42,7 @@ export class MongoMarketStore extends JsonMarketStore {
       this.serviceStateModel.init(), this.crawlRunModel.init(),
       this.scoringScenarioModel.init(),
     ]);
-    const documents = await this.listingModel.find({}).lean();
+    const documents = await this.listingModel.find({}).batchSize(1000).lean();
     this.listings.clear();
     for (const { _id, ...document } of documents) {
       const listing = plain(document);
@@ -54,7 +55,8 @@ export class MongoMarketStore extends JsonMarketStore {
     });
   }
 
-  async queryListings({ offset = 0, limit = 50, district, area, category, advertiserType, query, readiness, status, minPrice, maxPrice, minPricePerMeter, maxPricePerMeter, minArea, maxArea, minRooms, minYear, amenities = [] } = {}) {
+  async queryListings({ offset, limit, district, area, category, advertiserType, query, readiness, status, minPrice, maxPrice, minPricePerMeter, maxPricePerMeter, minArea, maxArea, minRooms, minYear, amenities = [] } = {}) {
+    ({ offset, limit } = normalizeListingPage({ offset, limit }));
     const filters = [];
     if (district) filters.push({ $or: [
       { district }, { neighborhood: district },

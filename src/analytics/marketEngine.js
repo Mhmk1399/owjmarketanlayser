@@ -171,7 +171,7 @@ export class LiveMarketEngine {
     this.seenFingerprints = {};
     for (const listing of this.store.getListings()) this.updateModels(listing);
     await this.persistModelState();
-    this.logger.info("analytics.models.rebuilt", "Coordinate-based models initialized from JSON listings", {
+    this.logger.info("analytics.models.rebuilt", "Coordinate-based models initialized from current listings", {
       listingCount: this.store.getListings().length,
       modelCount: this.models.size,
       migrationReason: saved ? "location-model-configuration-changed" : "no-saved-model",

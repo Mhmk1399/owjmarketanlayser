@@ -16,6 +16,7 @@ export default defineConfig({
       "/dashboard": "http://127.0.0.1:4567",
       "/events": "http://127.0.0.1:4567",
       "/listings": "http://127.0.0.1:4567",
+      "/listing-facets": "http://127.0.0.1:4567",
       "/scores": "http://127.0.0.1:4567",
       "/score-details": "http://127.0.0.1:4567",
       "/score-analytics-data": "http://127.0.0.1:4567",

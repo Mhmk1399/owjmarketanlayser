@@ -10,6 +10,7 @@ import { useEffect } from "react";
 
 /* Formatters — original calculations and signatures preserved. */
 export const numberFormat = new Intl.NumberFormat("fa-IR");
+const yearFormat = new Intl.NumberFormat("fa-IR", { useGrouping: false });
 
 export const decimalFormat = new Intl.NumberFormat("fa-IR", {
   maximumFractionDigits: 1,
@@ -23,6 +24,10 @@ const dateTime = new Intl.DateTimeFormat("fa-IR", {
 
 export function formatNumber(value) {
   return Number.isFinite(value) ? numberFormat.format(value) : "—";
+}
+
+export function formatYear(value) {
+  return Number.isFinite(value) ? yearFormat.format(value) : "—";
 }
 
 export function formatPercent(value, signed = false) {
@@ -407,6 +412,12 @@ export function Icon({ name, size = 20 }) {
       </>
     ),
     check: <path d="m5 12 4 4L19 6" />,
+    close: <path d="M6 6l12 12M18 6 6 18" />,
+    expand: (
+      <>
+        <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+      </>
+    ),
     database: (
       <>
         <ellipse cx="12" cy="5" rx="8" ry="3" />

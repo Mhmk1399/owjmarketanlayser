@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   AppFooter,
   AppHeader,
@@ -6,9 +6,12 @@ import {
   T,
   formatMoney,
   formatNumber,
+  formatYear,
   injectGlobalCSS,
 } from "./shared.jsx";
 import NeshanListingMap from "./NeshanListingMap.jsx";
+import ListingImageGallery from "./ListingImageGallery.jsx";
+import ListingDecisionSummary from "./ListingDecisionSummary.jsx";
 const advertiserLabels = {
   personal: "فایل شخصی",
   "real-estate-business": "مشاور املاک",
@@ -58,10 +61,13 @@ function persianText(value) {
 
 /** Localize ISO publication timestamps only; keep relative server text intact. */
 const publicationDate = new Intl.DateTimeFormat("fa-IR-u-ca-persian", {
-  dateStyle: "medium", timeZone: "Asia/Tehran",
+  dateStyle: "medium",
+  timeZone: "Asia/Tehran",
 });
 const publicationDateTime = new Intl.DateTimeFormat("fa-IR-u-ca-persian", {
-  dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Tehran",
+  dateStyle: "medium",
+  timeStyle: "short",
+  timeZone: "Asia/Tehran",
 });
 function displayPublication(value) {
   if (!value) return "زمان انتشار نامشخص";
@@ -78,12 +84,15 @@ function displayPublication(value) {
 
 function nearbyTravel(place) {
   const distance = Number.isFinite(place.routeDistanceMeters)
-    ? place.routeDistanceMeters : place.distanceMeters;
+    ? place.routeDistanceMeters
+    : place.distanceMeters;
   const duration = Number.isFinite(place.routeDurationSeconds)
-    ? Math.max(1, Math.round(place.routeDurationSeconds / 60)) : null;
+    ? Math.max(1, Math.round(place.routeDurationSeconds / 60))
+    : null;
   return {
     distance: `${formatNumber(distance)} متر`,
-    duration: duration === null ? null : `${formatNumber(duration)} دقیقه پیاده`,
+    duration:
+      duration === null ? null : `${formatNumber(duration)} دقیقه پیاده`,
   };
 }
 
@@ -224,7 +233,7 @@ const DETAIL_CSS = `
   line-height: 1.65;
   overflow-wrap: anywhere;
 }
-.owj-detail-page .saved-detail-hero > div > p {
+.owj-detail-page .saved-description__text {
   margin: 0;
   max-width: 750px;
   color: ${T.textSec};
@@ -233,6 +242,26 @@ const DETAIL_CSS = `
   white-space: pre-line;
   overflow-wrap: anywhere;
 }
+.owj-detail-page .saved-description__text--collapsed {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+.owj-detail-page .saved-description__toggle {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  margin-top: 4px;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: ${T.primary};
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.owj-detail-page .saved-description__toggle:hover { text-decoration: underline; }
 .owj-detail-page .saved-detail-highlights {
   display: flex;
   flex-wrap: wrap;
@@ -328,60 +357,6 @@ const DETAIL_CSS = `
   overflow-wrap: anywhere;
 }
 .owj-detail-page .saved-refetch-status:empty { display: none; }
-.owj-detail-page .saved-gallery {
-  padding: clamp(16px, 2vw, 23px);
-  margin-bottom: 20px;
-  border: 1px solid ${T.border};
-  border-radius: 22px;
-  background: ${T.surface};
-  box-shadow: ${T.shadow};
-  min-width: 0;
-}
-.owj-detail-page .saved-gallery__head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 15px;
-}
-.owj-detail-page .saved-gallery__head h2 {
-  margin: 0;
-  color: ${T.text};
-  font-size: 16px;
-  font-weight: 850;
-}
-.owj-detail-page .saved-gallery__head span {
-  color: ${T.textMuted}; font-size: 12px;
-  flex-shrink: 0;
-}
-.owj-detail-page .saved-gallery__grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  grid-auto-rows: clamp(115px, 13vw, 186px);
-  gap: 10px;
-  overflow: hidden;
-  border-radius: 16px;
-  min-width: 0;
-}
-.owj-detail-page .saved-gallery__grid img {
-  display: block;
-  min-width: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  border-radius: 12px;
-  background: ${T.raised};
-}
-.owj-detail-page .saved-gallery__grid img:first-child {
-  grid-column: span 2;
-  grid-row: span 2;
-}
-.owj-detail-page .saved-gallery__grid:has(img:only-child) { grid-template-columns: 1fr; grid-auto-rows: clamp(230px, 36vw, 420px); }
-.owj-detail-page .saved-gallery__grid:has(img:only-child) img:first-child { grid-column: auto; grid-row: auto; }
-.owj-detail-page .saved-gallery__grid:has(img:nth-child(2):last-child) {
-  grid-template-columns: 2fr 1fr; grid-auto-rows: clamp(205px, 28vw, 390px);
-}
-.owj-detail-page .saved-gallery__grid:has(img:nth-child(2):last-child) img:first-child { grid-column: auto; grid-row: auto; }
 .owj-detail-page .saved-detail-jumps {
   display: flex;
   align-items: center;
@@ -789,7 +764,7 @@ const DETAIL_CSS = `
   color: ${T.textMuted}; background: ${T.raised}; border-color: ${T.border};
 }
 .owj-detail-page .saved-amenity--no::before { content: '−'; }
-.owj-detail-page .saved-amenity--unknown::before { content: '؟'; }
+.owj-detail-page .saved-amenity--unknown::before { content: none; }
 .owj-detail-page .coverage-meter {
   display: block;
   height: 9px;
@@ -881,30 +856,6 @@ const DETAIL_CSS = `
   .owj-detail-page .saved-detail-hero { padding: 22px; border-radius: 20px; gap: 22px; }
   .owj-detail-page .saved-detail-hero h1 { font-size: 25px; }
   .owj-detail-page .saved-detail-price { padding: 19px; }
-  .owj-detail-page .saved-gallery { border-radius: 19px; padding: 15px; }
-  .owj-detail-page .saved-gallery__grid,
-  .owj-detail-page .saved-gallery__grid:has(img:only-child),
-  .owj-detail-page .saved-gallery__grid:has(img:nth-child(2):last-child) {
-    display: flex;
-    gap: 10px;
-    overflow-x: auto;
-    overflow-y: hidden;
-    padding: 2px 1px 8px;
-    scroll-snap-type: x mandatory;
-    scrollbar-width: thin;
-    border-radius: 10px;
-  }
-  .owj-detail-page .saved-gallery__grid img,
-  .owj-detail-page .saved-gallery__grid img:first-child {
-    display: block;
-    width: min(78vw, 390px);
-    min-width: min(78vw, 390px);
-    flex: 0 0 min(78vw, 390px);
-    height: 246px;
-    border-radius: 12px;
-    scroll-snap-align: start;
-  }
-  .owj-detail-page .saved-gallery__grid:has(img:only-child) img { width: 100%; flex: 1 0 100%; }
   .owj-detail-page .saved-detail-grid { grid-template-columns: 1fr; gap: 14px; }
   .owj-detail-page .saved-panel--wide,
   .owj-detail-page .saved-panel--map { grid-column: auto; }
@@ -925,9 +876,6 @@ const DETAIL_CSS = `
   .owj-detail-page .saved-detail-highlights > span { padding: 8px 10px; font-size: 11px; }
   .owj-detail-page .saved-detail-price { display: flex; padding: 17px; gap: 9px; }
   .owj-detail-page .saved-detail-price > small { margin-bottom: 5px; }
-  .owj-detail-page .saved-gallery { padding: 12px; }
-  .owj-detail-page .saved-gallery__grid img,
-  .owj-detail-page .saved-gallery__grid img:first-child { height: 215px; }
   .owj-detail-page .saved-panel { padding: 17px 15px; }
   .owj-detail-page .saved-panel__head { gap: 13px; }
   .owj-detail-page .score-final { min-width: 98px; padding: 9px; font-size: 28px; }
@@ -967,6 +915,67 @@ function Fact({ label, value }) {
     </div>
   );
 }
+function ListingDescription({ description }) {
+  const textRef = useRef(null);
+  const [expanded, setExpanded] = useState(false);
+  const [hasOverflow, setHasOverflow] = useState(false);
+  const text = persianText(
+    description || "توضیح عمومی برای این آگهی ذخیره نشده است.",
+  );
+
+  useEffect(() => setExpanded(false), [description]);
+  useLayoutEffect(() => {
+    const element = textRef.current;
+    if (!element) return;
+    let active = true;
+    const measure = () => {
+      if (!active) return;
+      const lineHeight = Number.parseFloat(
+        window.getComputedStyle(element).lineHeight,
+      );
+      setHasOverflow(
+        Number.isFinite(lineHeight) &&
+          element.scrollHeight > lineHeight * 3 + 1,
+      );
+    };
+    measure();
+    const observer =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(measure);
+    observer?.observe(element);
+    window.addEventListener("resize", measure);
+    document.fonts?.ready.then(measure);
+    return () => {
+      active = false;
+      observer?.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [text, expanded]);
+
+  return (
+    <div className="saved-description">
+      <p
+        id="listing-description"
+        ref={textRef}
+        className={`saved-description__text${expanded ? "" : " saved-description__text--collapsed"}`}
+      >
+        {text}
+      </p>
+      {hasOverflow && (
+        <button
+          className="saved-description__toggle"
+          type="button"
+          aria-expanded={expanded}
+          aria-controls="listing-description"
+          onClick={() => setExpanded((value) => !value)}
+        >
+          {expanded ? "نمایش کمتر" : "نمایش بیشتر"}
+        </button>
+      )}
+    </div>
+  );
+}
 export default function SavedListingDetailPage({ token }) {
   injectGlobalCSS();
   const [listing, setListing] = useState(null);
@@ -976,6 +985,7 @@ export default function SavedListingDetailPage({ token }) {
   const [placesLoading, setPlacesLoading] = useState(false);
   const [scoreDetail, setScoreDetail] = useState(null);
   const [scenarioScores, setScenarioScores] = useState([]);
+  const [scoreLoading, setScoreLoading] = useState(true);
   useEffect(() => {
     const controller = new AbortController();
     fetch(`/listings/${encodeURIComponent(token)}`, {
@@ -1001,6 +1011,7 @@ export default function SavedListingDetailPage({ token }) {
   }, [token]);
   useEffect(() => {
     const controller = new AbortController();
+    setScoreLoading(true);
     Promise.all([
       fetch(`/score-details/${encodeURIComponent(token)}`, {
         signal: controller.signal,
@@ -1015,6 +1026,9 @@ export default function SavedListingDetailPage({ token }) {
       })
       .catch((caught) => {
         if (caught.name !== "AbortError") setScoreDetail(null);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setScoreLoading(false);
       });
     return () => controller.abort();
   }, [token]);
@@ -1068,9 +1082,15 @@ export default function SavedListingDetailPage({ token }) {
         <style>{DETAIL_CSS}</style>
         <AppHeader active="listings" />
         <main className="saved-detail-main">
-          <section className="owj-detail-state" role="status" aria-live="polite">
+          <section
+            className="owj-detail-state"
+            role="status"
+            aria-live="polite"
+          >
             <div>
-              <span className="owj-detail-state__icon"><Icon name="building" size={29} /></span>
+              <span className="owj-detail-state__icon">
+                <Icon name="building" size={29} />
+              </span>
               <h1>در حال بارگذاری جزئیات آگهی…</h1>
               <p>اطلاعات ملک، قیمت و موقعیت مکانی در حال دریافت است.</p>
             </div>
@@ -1084,9 +1104,14 @@ export default function SavedListingDetailPage({ token }) {
         <style>{DETAIL_CSS}</style>
         <AppHeader active="listings" />
         <main className="saved-detail-main">
-          <section className="owj-detail-state owj-detail-state--error" role="alert">
+          <section
+            className="owj-detail-state owj-detail-state--error"
+            role="alert"
+          >
             <div>
-              <span className="owj-detail-state__icon"><Icon name="alert" size={29} /></span>
+              <span className="owj-detail-state__icon">
+                <Icon name="alert" size={29} />
+              </span>
               <h1>جزئیات آگهی در دسترس نیست</h1>
               <p>{persianText(error)}</p>
               <a href="/catalog">بازگشت به فهرست آگهی‌ها</a>
@@ -1113,7 +1138,9 @@ export default function SavedListingDetailPage({ token }) {
           <div>
             <div className="catalog-tags">
               <span className="status-pill status-pill--active">
-                {persianText(advertiserLabels[listing.advertiserType] || "نامشخص")}
+                {persianText(
+                  advertiserLabels[listing.advertiserType] || "نامشخص",
+                )}
               </span>
               <span className="status-pill">
                 {persianText(listing.neighborhood || "مکان نامشخص")}
@@ -1132,19 +1159,29 @@ export default function SavedListingDetailPage({ token }) {
                   className="score-tag score-tag--scenario"
                   key={item.scenarioId}
                 >
-                    {persianText(item.name)}: {formatNumber(item.recommendation)}
+                  {persianText(item.name)}: {formatNumber(item.recommendation)}
                 </span>
               ))}
             </div>
             <h1>{persianText(listing.title)}</h1>
-            <p>
-              {persianText(listing.description ||
-                "توضیح عمومی برای این آگهی ذخیره نشده است.")}
-            </p>
-            <div className="saved-detail-highlights" aria-label="مشخصات کلیدی ملک">
-              <span>متراژ <strong>{formatNumber(property.area)} متر</strong></span>
-              <span>اتاق <strong>{formatNumber(property.rooms)}</strong></span>
-              <span>سال ساخت <strong>{formatNumber(property.constructionYear)}</strong></span>
+            <ListingDescription
+              key={listing.token}
+              description={listing.description}
+            />
+            <div
+              className="saved-detail-highlights"
+              aria-label="مشخصات کلیدی ملک"
+            >
+              <span>
+                متراژ <strong>{formatNumber(property.area)} متر</strong>
+              </span>
+              <span>
+                اتاق <strong>{formatNumber(property.rooms)}</strong>
+              </span>
+              <span>
+                سال ساخت{" "}
+                <strong>{formatYear(property.constructionYear)}</strong>
+              </span>
             </div>
           </div>
           <aside className="saved-detail-price">
@@ -1156,35 +1193,23 @@ export default function SavedListingDetailPage({ token }) {
               {refetching ? "در حال دریافت…" : "دریافت دوباره جزئیات"}
             </button>
             <a href={listing.url} target="_blank" rel="noreferrer">
-              مشاهده آگهی   <Icon name="external" size={16} />
+              مشاهده آگهی <Icon name="external" size={16} />
             </a>
             <p className="saved-refetch-status" aria-live="polite">
               {persianText(refetchStatus)}
             </p>
           </aside>
         </header>
-        {!!listing.images?.length && (
-          <section className="saved-gallery" aria-label="تصاویر عمومی آگهی">
-            <div className="saved-gallery__head">
-              <h2>تصاویر ملک</h2>
-              <span>{formatNumber(listing.images.length)} تصویر</span>
-            </div>
-            <div className="saved-gallery__grid">
-            {listing.images.map((image, index) => (
-              <img
-                key={image.url}
-                src={image.url}
-                alt={persianText(image.alt || `تصویر ${formatNumber(index + 1)} آگهی`)}
-                width={image.width || undefined}
-                height={image.height || undefined}
-                loading={index ? "lazy" : "eager"}
-                referrerPolicy="no-referrer"
-              />
-            ))}
-            </div>
-          </section>
-        )}
-        <nav className="saved-detail-jumps" aria-label="دسترسی سریع به بخش‌های آگهی">
+        <ListingDecisionSummary listing={listing} scoreDetail={scoreDetail} scoreLoading={scoreLoading} />
+        <ListingImageGallery
+          key={listing.token}
+          images={listing.images}
+          title={listing.title}
+        />
+        <nav
+          className="saved-detail-jumps"
+          aria-label="دسترسی سریع به بخش‌های آگهی"
+        >
           <a href="#owj-specs">مشخصات ملک</a>
           <a href="#owj-pricing">قیمت‌گذاری</a>
           <a href="#owj-amenities">امکانات</a>
@@ -1194,7 +1219,10 @@ export default function SavedListingDetailPage({ token }) {
         </nav>
         <div className="saved-detail-grid">
           {scored && (
-            <section id="owj-score" className="saved-panel saved-panel--wide score-detail-panel">
+            <section
+              id="owj-score"
+              className="saved-panel saved-panel--wide score-detail-panel"
+            >
               <div className="saved-panel__head">
                 <div>
                   <h2>امتیاز، محاسبه و نتیجه نهایی</h2>
@@ -1245,9 +1273,13 @@ export default function SavedListingDetailPage({ token }) {
               <div className="score-equation" dir="ltr">
                 <span>{formatNumber(scored.scores.dealValue)}</span>
                 <b>×</b>
-                <span>{persianText(scored.formula.appliedConfidenceGate.toFixed(3))}</span>
+                <span>
+                  {persianText(scored.formula.appliedConfidenceGate.toFixed(3))}
+                </span>
                 <b>×</b>
-                <span>{persianText(scored.formula.appliedRiskGate.toFixed(3))}</span>
+                <span>
+                  {persianText(scored.formula.appliedRiskGate.toFixed(3))}
+                </span>
                 <b>=</b>
                 <strong>{formatNumber(scored.scores.recommendation)}</strong>
               </div>
@@ -1279,13 +1311,19 @@ export default function SavedListingDetailPage({ token }) {
             </section>
           )}
           {scored && !comparables.length && (
-            <section id="owj-comparables" className="saved-panel saved-panel--wide">
+            <section
+              id="owj-comparables"
+              className="saved-panel saved-panel--wide"
+            >
               <h2>خانه‌های مشابه مورد مقایسه</h2>
               <p>برای این آگهی مقایسه مشابه کافی در خروجی فعلی وجود ندارد.</p>
             </section>
           )}
           {!!comparables.length && (
-            <section id="owj-comparables" className="saved-panel saved-panel--wide">
+            <section
+              id="owj-comparables"
+              className="saved-panel saved-panel--wide"
+            >
               <div className="saved-panel__head">
                 <div>
                   <h2>خانه‌های مشابه مورد مقایسه</h2>
@@ -1300,7 +1338,9 @@ export default function SavedListingDetailPage({ token }) {
                   <article key={item.token}>
                     <div>
                       <span>{persianText(item.neighborhood)}</span>
-                      <a href={`/listing/${item.token}`}>{persianText(item.title)}</a>
+                      <a href={`/listing/${item.token}`}>
+                        {persianText(item.title)}
+                      </a>
                       <small>
                         {formatNumber(item.area)} متر ·{" "}
                         {formatNumber(item.rooms)} اتاق · فاصله{" "}
@@ -1342,8 +1382,15 @@ export default function SavedListingDetailPage({ token }) {
               {(listing.nearbyPlaces || []).map((place) => {
                 const travel = nearbyTravel(place);
                 return (
-                  <article key={place.poiHash || `${place.category}-${place.title}-${place.distanceMeters}`}>
-                    <span>{place.category === "metro-station" ? "مترو" : "اتوبوس"}</span>
+                  <article
+                    key={
+                      place.poiHash ||
+                      `${place.category}-${place.title}-${place.distanceMeters}`
+                    }
+                  >
+                    <span>
+                      {place.category === "metro-station" ? "مترو" : "اتوبوس"}
+                    </span>
                     <div>
                       <strong>{persianText(place.title)}</strong>
                       <small>
@@ -1378,7 +1425,7 @@ export default function SavedListingDetailPage({ token }) {
               <Fact label="اتاق" value={formatNumber(property.rooms)} />
               <Fact
                 label="سال ساخت"
-                value={formatNumber(property.constructionYear)}
+                value={formatYear(property.constructionYear)}
               />
               <Fact label="طبقه" value={formatNumber(property.floor)} />
               <Fact
@@ -1415,7 +1462,9 @@ export default function SavedListingDetailPage({ token }) {
           <section className="saved-panel">
             <h2>نوع آگهی‌دهنده</h2>
             <strong className="saved-advertiser">
-              {persianText(advertiserLabels[listing.advertiserType] || "نامشخص")}
+              {persianText(
+                advertiserLabels[listing.advertiserType] || "نامشخص",
+              )}
             </strong>
             <p>
               این طبقه‌بندی فقط از سیگنال‌های عمومی کسب‌وکار ساخته شده و هیچ نام

@@ -6,6 +6,7 @@ import {
   T,
   formatMoney,
   formatNumber,
+  formatYear,
   injectGlobalCSS,
 } from "./shared.jsx";
 const lifecycleLabels = {
@@ -29,6 +30,7 @@ const amenityDisplayLabels = {
   storage: "انباری",
   balcony: "بالکن",
 };
+const LISTINGS_PAGE_SIZE = 40;
 
 /*
  * OWJ catalog presentation. Styles live in this JSX file and are scoped to
@@ -401,6 +403,32 @@ const CATALOG_CSS = `
     font-size: 13px;
     line-height: 1.8;
     font-weight: 600;
+  }
+  .listings-page .catalog-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 24px;
+  }
+  .listings-page .catalog-pagination button {
+    min-height: 44px;
+    padding: 0 16px;
+    border: 1px solid ${T.borderMed};
+    border-radius: 8px;
+    background: ${T.surface};
+    color: ${T.text};
+    cursor: pointer;
+  }
+  .listings-page .catalog-pagination button:disabled {
+    opacity: .45;
+    cursor: not-allowed;
+  }
+  .listings-page .catalog-pagination span {
+    color: ${T.textMuted};
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
   }
   .listings-page .listing-results::before {
     content: '';
@@ -843,7 +871,7 @@ function ListingCard({ listing }) {
         </div>
         <div>
           <dt>سال ساخت</dt>
-          <dd>{formatNumber(listing.property?.constructionYear)}</dd>
+          <dd>{formatYear(listing.property?.constructionYear)}</dd>
         </div>
         <div>
           <dt>طبقه</dt>
@@ -921,10 +949,22 @@ export default function ListingsPage() {
   const [minRooms, setMinRooms] = useState(initial.get("minRooms") || "");
   const [minYear, setMinYear] = useState(initial.get("minYear") || "");
   const [amenities, setAmenities] = useState(initial.getAll("amenity"));
+  const filterKey = JSON.stringify([
+    query, district, category, readiness, lifecycle, advertiserType, scenario,
+    minPrice, maxPrice, minPricePerMeter, maxPricePerMeter, minArea, maxArea,
+    minRooms, minYear, amenities,
+  ]);
+  const [pagination, setPagination] = useState({ page: 0, filterKey });
+  const page = pagination.filterKey === filterKey ? pagination.page : 0;
   useEffect(() => {
     const controller = new AbortController();
+    setLoading(true);
+    setError(null);
     const timer = setTimeout(() => {
-      const params = new URLSearchParams({ limit: "100" });
+      const params = new URLSearchParams({
+        limit: String(LISTINGS_PAGE_SIZE),
+        offset: String(page * LISTINGS_PAGE_SIZE),
+      });
       const add = (key, value) => {
         if (value && value !== "all") params.set(key, value);
       };
@@ -943,7 +983,6 @@ export default function ListingsPage() {
       add("minRooms", minRooms);
       add("minYear", minYear);
       amenities.forEach((value) => params.append("amenity", value));
-      setLoading(true);
       const endpoint =
         scenario === "all"
           ? `/listings?${params}`
@@ -958,13 +997,20 @@ export default function ListingsPage() {
             : Promise.reject(new Error(`HTTP ${response.status}`)),
         )
         .then((payload) => {
+          const lastPage = Math.max(0, Math.ceil((payload.total || 0) / LISTINGS_PAGE_SIZE) - 1);
+          if (page > lastPage) {
+            setPagination({ page: lastPage, filterKey });
+            return;
+          }
           setListings(payload.listings || []);
           setTotal(payload.total || 0);
         })
         .catch((caught) => {
           if (caught.name !== "AbortError") setError(caught.message);
         })
-        .finally(() => setLoading(false));
+        .finally(() => {
+          if (!controller.signal.aborted) setLoading(false);
+        });
     }, 250);
     return () => {
       clearTimeout(timer);
@@ -987,6 +1033,8 @@ export default function ListingsPage() {
     minRooms,
     minYear,
     amenities,
+    page,
+    filterKey,
   ]);
   useEffect(() => {
     fetch("/listing-facets")
@@ -1001,6 +1049,11 @@ export default function ListingsPage() {
       .catch(() => {});
   }, []);
   const filtered = listings;
+  const pageCount = Math.ceil(total / LISTINGS_PAGE_SIZE);
+  const goToPage = (nextPage) => {
+    setPagination({ page: nextPage, filterKey });
+    document.getElementById("catalog-results")?.scrollIntoView({ block: "start" });
+  };
   useEffect(() => {
     const params = new URLSearchParams();
     if (query) params.set("q", query);
@@ -1342,9 +1395,10 @@ export default function ListingsPage() {
             </div>
           </details>
         </section>
-        <div className="listing-results" role="status" aria-live="polite">
-          نمایش {formatNumber(filtered.length)} مورد نخست از{" "}
-          {formatNumber(total)} آگهی منطبق
+        <div id="catalog-results" className="listing-results" role="status" aria-live="polite">
+          {loading ? "در حال دریافت نتایج" : error ? "دریافت نتایج ناموفق بود" : total > 0
+            ? `نمایش ${formatNumber(page * LISTINGS_PAGE_SIZE + 1)} تا ${formatNumber(page * LISTINGS_PAGE_SIZE + filtered.length)} از ${formatNumber(total)} آگهی منطبق`
+            : "آگهی منطبقی پیدا نشد"}
         </div>
         {loading && (
           <div className="location-state">در حال بارگذاری آگهی‌ها…</div>
@@ -1370,6 +1424,17 @@ export default function ListingsPage() {
               </div>
             )}
           </section>
+        )}
+        {!error && pageCount > 1 && (
+          <nav className="catalog-pagination" aria-label="صفحه‌بندی آگهی‌ها">
+            <button type="button" disabled={loading || page === 0} onClick={() => goToPage(page - 1)}>
+              صفحه قبل
+            </button>
+            <span>صفحه {formatNumber(page + 1)} از {formatNumber(pageCount)}</span>
+            <button type="button" disabled={loading || page + 1 >= pageCount} onClick={() => goToPage(page + 1)}>
+              صفحه بعد
+            </button>
+          </nav>
         )}
       </main>
       <AppFooter />
