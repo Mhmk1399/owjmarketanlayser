@@ -23,6 +23,10 @@ function ListingCard({ listing }) {
         <p>{listing.description || "توضیح عمومی برای این آگهی ثبت نشده است."}</p>
       </div>
       <div className="catalog-card__price">
+        {listing.scenarioScore && <div className="scenario-score-badge" aria-label={`امتیاز سناریوی ${listing.scenarioScore.scenarioName}`}>
+          <span>{listing.scenarioScore.scenarioName}</span><strong>{formatNumber(listing.scenarioScore.recommendation)}</strong>
+          <small>رتبه {formatNumber(listing.scenarioScore.rank)}</small>
+        </div>}
         <strong>{formatMoney(listing.pricing?.price)}</strong>
         <span>هر متر {formatMoney(listing.pricing?.pricePerMeter)}</span>
       </div>
@@ -59,6 +63,8 @@ export default function ListingsPage() {
   const [readiness, setReadiness] = useState(initial.get("readiness") || "all");
   const [lifecycle, setLifecycle] = useState(initial.get("status") || "active");
   const [advertiserType, setAdvertiserType] = useState(initial.get("advertiserType") || "all");
+  const [scenario, setScenario] = useState(initial.get("scenario") || "all");
+  const [scenarios, setScenarios] = useState([]);
   const [facets, setFacets] = useState({ districts: [], categories: [], bounds: {} });
   const [total, setTotal] = useState(0);
   const [minPrice, setMinPrice] = useState(initial.get("minPrice") || ""); const [maxPrice, setMaxPrice] = useState(initial.get("maxPrice") || "");
@@ -75,15 +81,17 @@ export default function ListingsPage() {
       add("q", query.trim()); add("district", district); add("category", category); add("readiness", readiness); add("status", lifecycle); add("advertiserType", advertiserType);
       add("minPrice", minPrice); add("maxPrice", maxPrice); add("minPricePerMeter", minPricePerMeter); add("maxPricePerMeter", maxPricePerMeter); add("minArea", minArea); add("maxArea", maxArea); add("minRooms", minRooms); add("minYear", minYear);
       amenities.forEach((value) => params.append("amenity", value)); setLoading(true);
-      fetch(`/listings?${params}`, { signal: controller.signal, headers: { accept: "application/json" } }).then((response) => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`)))
+      const endpoint = scenario === "all" ? `/listings?${params}` : `/scoring-scenarios/${encodeURIComponent(scenario)}/scores?${params}`;
+      fetch(endpoint, { signal: controller.signal, headers: { accept: "application/json" } }).then((response) => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`)))
       .then((payload) => { setListings(payload.listings || []); setTotal(payload.total || 0); })
       .catch((caught) => { if (caught.name !== "AbortError") setError(caught.message); })
       .finally(() => setLoading(false));
     }, 250);
     return () => { clearTimeout(timer); controller.abort(); };
-  }, [query, district, category, readiness, lifecycle, advertiserType, minPrice, maxPrice, minPricePerMeter, maxPricePerMeter, minArea, maxArea, minRooms, minYear, amenities]);
+  }, [query, district, category, readiness, lifecycle, advertiserType, scenario, minPrice, maxPrice, minPricePerMeter, maxPricePerMeter, minArea, maxArea, minRooms, minYear, amenities]);
 
   useEffect(() => { fetch("/listing-facets").then((response) => response.json()).then(setFacets).catch(() => {}); }, []);
+  useEffect(() => { fetch("/scoring-scenarios").then((response) => response.ok ? response.json() : { scenarios: [] }).then((payload) => setScenarios(payload.scenarios || [])).catch(() => {}); }, []);
 
   const filtered = listings;
 
@@ -92,12 +100,13 @@ export default function ListingsPage() {
     if (query) params.set("q", query); if (district !== "all") params.set("district", district);
     if (category !== "all") params.set("category", category); if (readiness !== "all") params.set("readiness", readiness);
     if (advertiserType !== "all") params.set("advertiserType", advertiserType);
+    if (scenario !== "all") params.set("scenario", scenario);
     if (lifecycle !== "active") params.set("status", lifecycle);
     [["minPrice",minPrice],["maxPrice",maxPrice],["minPricePerMeter",minPricePerMeter],["maxPricePerMeter",maxPricePerMeter],["minArea",minArea],["maxArea",maxArea],["minRooms",minRooms],["minYear",minYear]].forEach(([key,value])=>{if(value)params.set(key,value)}); amenities.forEach((value)=>params.append("amenity",value));
     window.history.replaceState(null, "", `/catalog${params.size ? `?${params}` : ""}`);
-  }, [query, district, category, readiness, lifecycle, advertiserType, minPrice, maxPrice, minPricePerMeter, maxPricePerMeter, minArea, maxArea, minRooms, minYear, amenities]);
+  }, [query, district, category, readiness, lifecycle, advertiserType, scenario, minPrice, maxPrice, minPricePerMeter, maxPricePerMeter, minArea, maxArea, minRooms, minYear, amenities]);
 
-  const reset = () => { setQuery(""); setDistrict("all"); setCategory("all"); setReadiness("all"); setLifecycle("active"); setAdvertiserType("all"); setMinPrice(""); setMaxPrice(""); setMinPricePerMeter(""); setMaxPricePerMeter(""); setMinArea(""); setMaxArea(""); setMinRooms(""); setMinYear(""); setAmenities([]); };
+  const reset = () => { setQuery(""); setDistrict("all"); setCategory("all"); setReadiness("all"); setLifecycle("active"); setAdvertiserType("all"); setScenario("all"); setMinPrice(""); setMaxPrice(""); setMinPricePerMeter(""); setMaxPricePerMeter(""); setMinArea(""); setMaxArea(""); setMinRooms(""); setMinYear(""); setAmenities([]); };
   const toggleAmenity = (name) => setAmenities((current) => current.includes(name) ? current.filter((item) => item !== name) : [...current, name]);
   return <div className="listings-page" dir="rtl">
     <AppHeader active="listings" />
@@ -112,6 +121,7 @@ export default function ListingsPage() {
         <SelectFilter id="category-filter" label="دسته" value={category} onChange={setCategory}><option value="all">همه دسته‌ها</option>{facets.categories.map((value) => <option key={value}>{value}</option>)}</SelectFilter>
         <SelectFilter id="readiness-filter" label="پوشش داده" value={readiness} onChange={setReadiness}><option value="all">همه وضعیت‌ها</option><option value="scoring-ready">آماده امتیازدهی</option><option value="history-only">فقط سابقه</option></SelectFilter>
         <SelectFilter id="advertiser-filter" label="نوع آگهی‌دهنده" value={advertiserType} onChange={setAdvertiserType}><option value="all">همه آگهی‌دهندگان</option><option value="personal">فایل شخصی</option><option value="real-estate-business">مشاور املاک</option><option value="unknown">نامشخص</option></SelectFilter>
+        <SelectFilter id="scenario-filter" label="سناریوی امتیازدهی و مرتب‌سازی" value={scenario} onChange={setScenario}><option value="all">مرتب‌سازی معمول آگهی‌ها</option>{scenarios.map((item) => <option value={item.scenarioId} key={item.scenarioId}>{item.name}</option>)}</SelectFilter>
         <SelectFilter id="lifecycle-filter" label="وضعیت انتشار" value={lifecycle} onChange={setLifecycle}><option value="all">همه</option><option value="active">فعال</option><option value="not-seen">دیده‌نشده</option><option value="possibly-removed">احتمال حذف</option><option value="removed">حذف‌شده</option></SelectFilter>
         <button className="listing-reset" type="button" onClick={reset}>پاک‌کردن فیلترها</button>
         <div className="listing-range-card"><strong>قیمت کل</strong><label>از<input inputMode="numeric" value={minPrice} onChange={(e)=>setMinPrice(e.target.value)} placeholder="حداقل تومان" /></label><label>تا<input inputMode="numeric" value={maxPrice} onChange={(e)=>setMaxPrice(e.target.value)} placeholder="حداکثر تومان" /></label></div>

@@ -4,6 +4,12 @@
   "title": "Owj public market listing",
   "type": "object",
   "additionalProperties": false,
+  "allOf": [
+    {
+      "if": { "properties": { "schemaVersion": { "const": "2.0.0" } }, "required": ["schemaVersion"] },
+      "then": { "required": ["media"] }
+    }
+  ],
   "required": [
     "schemaVersion",
     "token",
@@ -40,7 +46,7 @@
     "contentFingerprint"
   ],
   "properties": {
-    "schemaVersion": { "const": "1.0.0" },
+    "schemaVersion": { "enum": ["1.0.0", "2.0.0"] },
     "token": { "type": "string", "pattern": "^[A-Za-z0-9_-]+$" },
     "url": { "type": "string", "format": "uri" },
     "title": { "type": "string", "minLength": 1 },
@@ -129,6 +135,7 @@
       "properties": {
         "deedType": { "type": ["string", "null"] }, "buildingDirection": { "type": ["string", "null"] },
         "unitPosition": { "type": ["string", "null"] }, "propertyType": { "type": ["string", "null"] },
+        "landWidth": { "type": ["string", "null"] }, "buildingDensity": { "type": ["string", "null"] },
         "buildingCondition": { "type": ["string", "null"] }, "heating": { "type": ["string", "null"] },
         "cooling": { "type": ["string", "null"] }
       }
@@ -166,7 +173,23 @@
     "advertiserType": { "enum": ["personal", "real-estate-business", "unknown"] },
     "advertiserSignals": {
       "type": "object", "additionalProperties": false, "required": ["type", "isBusiness", "hasBusinessBadge"],
-      "properties": { "type": { "enum": ["personal", "real-estate-business", "unknown"] }, "isBusiness": { "type": ["boolean", "null"] }, "hasBusinessBadge": { "type": ["boolean", "null"] } }
+      "properties": {
+        "type": { "enum": ["personal", "real-estate-business", "unknown"] },
+        "isBusiness": { "type": ["boolean", "null"] }, "hasBusinessBadge": { "type": ["boolean", "null"] },
+        "panelType": { "type": ["string", "null"], "pattern": "^[A-Za-z0-9_-]+$" },
+        "hasBusinessReference": { "type": ["boolean", "null"] },
+        "classificationSource": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+        "confidence": { "enum": ["high", "medium", "low"] },
+        "businessDisplayName": { "type": ["string", "null"], "maxLength": 300 }
+      }
+    },
+    "media": {
+      "type": "object", "additionalProperties": false,
+      "required": ["samePropertyImageClaim", "claimSource"],
+      "properties": {
+        "samePropertyImageClaim": { "type": ["boolean", "null"] },
+        "claimSource": { "enum": ["poster-declared-public-field", null] }
+      }
     },
     "coordinates": {
       "type": "object",

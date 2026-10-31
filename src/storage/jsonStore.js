@@ -66,15 +66,22 @@ function migrateListing(listing) {
       doorman: null, security: null, pool: null, sauna: null, gym: null, centralAntenna: null,
       airConditioning: null, heating: null, ...migrated.amenities,
     },
-    propertyDetails: migrated.propertyDetails ?? {
-      deedType: null, buildingDirection: null, unitPosition: null, propertyType: null,
-      buildingCondition: null, heating: null, cooling: null,
+    propertyDetails: {
+      deedType: null, buildingDirection: null, unitPosition: null, landWidth: null,
+      buildingDensity: null, propertyType: null, buildingCondition: null, heating: null,
+      cooling: null, ...migrated.propertyDetails,
     },
     advertiserSignals: {
       type: advertiserType,
       isBusiness: migrated.advertiserSignals?.isBusiness ?? null,
       hasBusinessBadge: migrated.advertiserSignals?.hasBusinessBadge ?? null,
+      panelType: migrated.advertiserSignals?.panelType ?? null,
+      hasBusinessReference: migrated.advertiserSignals?.hasBusinessReference ?? null,
+      classificationSource: migrated.advertiserSignals?.classificationSource ?? [],
+      confidence: migrated.advertiserSignals?.confidence ?? "low",
+      businessDisplayName: migrated.advertiserSignals?.businessDisplayName ?? null,
     },
+    media: migrated.media ?? { samePropertyImageClaim: null, claimSource: null },
     publication: migrated.publication ?? { text: migrated.publishedText ?? null, source: null },
     locationProvenance: migrated.locationProvenance ?? {
       source: migrated.coordinates?.source ?? null,

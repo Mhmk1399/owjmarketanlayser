@@ -20,6 +20,7 @@ export default defineConfig({
       "/score-details": "http://127.0.0.1:4567",
       "/score-analytics-data": "http://127.0.0.1:4567",
       "/score-workshop-data": "http://127.0.0.1:4567",
+      "/scoring-scenarios": "http://127.0.0.1:4567",
       "/scoring-report": "http://127.0.0.1:4567",
       "/locations": "http://127.0.0.1:4567",
     },

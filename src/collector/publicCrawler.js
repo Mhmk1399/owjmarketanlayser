@@ -77,6 +77,7 @@ export class PublicCrawler {
     this.stopRequested = false;
     this.currentPromise = null;
     this.requestSchedule = Promise.resolve();
+    this.stateWriteQueue = Promise.resolve();
     this.lastPublicRequestAt = 0;
     this.planning = { areaOffset: 0, nextAreaOffset: 0 };
     this.requestBudget = null;
@@ -116,12 +117,15 @@ export class PublicCrawler {
   }
 
   async persistState() {
-    await this.store.saveServiceState({
+    const state = {
       schemaVersion: "1.0.0",
       updatedAt: new Date().toISOString(),
       crawl: this.snapshot(),
-      planning: this.planning,
-    });
+      planning: { ...this.planning },
+    };
+    const write = this.stateWriteQueue.catch(() => {}).then(() => this.store.saveServiceState(state));
+    this.stateWriteQueue = write;
+    await write;
   }
 
   start() {
@@ -311,7 +315,7 @@ export class PublicCrawler {
       offset: this.planning.areaOffset,
     });
     const partitions = plan.partitions;
-    this.planning.nextAreaOffset = plan.nextOffset;
+    this.planning.nextAreaOffset = this.planning.areaOffset;
     this.state.areasTotal = partitions.length;
     diagnostics.queue = {
       category: "buy-apartment",
@@ -431,6 +435,9 @@ export class PublicCrawler {
           this.logger.error("crawl.discovery.partition.deferred", "Area discovery failed and was queued for recovery", {
             area: partition.area, apiError: apiError.message, htmlError: htmlError.message,
           });
+          this.planning.nextAreaOffset = basePartitions.length
+            ? (this.planning.nextAreaOffset + 1) % basePartitions.length : 0;
+          await this.persistState();
           continue;
         }
       }
@@ -450,6 +457,8 @@ export class PublicCrawler {
       this.state.discovered = listings.size;
       this.state.queued += newlyDiscovered.length;
       this.state.areasCompleted += 1;
+      this.planning.nextAreaOffset = basePartitions.length
+        ? (this.planning.nextAreaOffset + 1) % basePartitions.length : 0;
       this.logger.info("crawl.discovery.partition.complete", "Public search partition completed", {
         runId: this.state.runId,
         category: partition.category,
@@ -463,6 +472,7 @@ export class PublicCrawler {
         areasCompleted: this.state.areasCompleted,
         areasTotal: this.state.areasTotal,
       });
+      await this.persistState();
       if (newlyDiscovered.length && !this.stopRequested) await onDiscovered(newlyDiscovered);
     }
     for (const item of failedPartitions.slice(0, this.config.crawl.recoveryMaxItems)) {
@@ -722,13 +732,13 @@ export class PublicCrawler {
       this.state.status = "discovering";
       await this.persistState();
       const searchPage = await this.context.newPage();
-      const { listings, diagnostics } = await this.discover(searchPage, async (batch) => {
+      const { listings, diagnostics } = await this.discover(searchPage);
+      await searchPage.close();
+      if (!this.stopRequested && listings.length) {
         this.state.status = "processing";
         await this.persistState();
-        await this.processDetails(batch, { append: true });
-        if (!this.stopRequested) this.state.status = "discovering";
-      });
-      await searchPage.close();
+        await this.processDetails(listings);
+      }
       const lifecycleEligibleAreaIds = diagnostics.partitions
         .filter((partition) => partition.stopReason === "source-exhausted")
         .map((partition) => partition.area?.id)

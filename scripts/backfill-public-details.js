@@ -1,6 +1,7 @@
 import "dotenv/config";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { spawn } from "node:child_process";
 import mongoose from "mongoose";
 import { Listing } from "../src/models/listing.js";
 import { adaptPublicPostDocument, publicPostUrl } from "../src/collector/divarPost.js";
@@ -20,6 +21,8 @@ const limit = integerOption("limit", 100);
 const intervalMs = integerOption("interval-ms", 2_000, 250);
 const concurrency = Math.min(8, integerOption("concurrency", 3, 1));
 const retryTerminal = process.argv.includes("--retry-terminal");
+const refreshAll = process.argv.includes("--all");
+const reclassifyQuality = process.argv.includes("--reclassify-quality");
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function writeAtomic(file, value) {
@@ -74,6 +77,21 @@ function countResults(attempted) {
   }, {});
 }
 
+async function runQualityReclassification() {
+  await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [path.join(serviceRoot, "scripts", "reclassify-listing-quality.js")], {
+      cwd: serviceRoot,
+      env: process.env,
+      stdio: "inherit",
+    });
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      if (code === 0) resolve();
+      else reject(new Error(`Quality reclassification exited with ${signal || code}`));
+    });
+  });
+}
+
 if (!process.env.MONGODB_URI) throw new Error("MONGODB_URI is required");
 await mongoose.connect(process.env.MONGODB_URI, {
   dbName: process.env.MONGODB_DB_NAME || "owj_market_analytics",
@@ -84,12 +102,15 @@ try {
   const state = await readState();
   const documents = (await Listing.find({}).sort({ "lifecycle.detailFetchedAt": 1, token: 1 }).lean())
     .map(({ _id, ...listing }) => JSON.parse(JSON.stringify(listing)));
-  const candidates = documents.filter((listing) => needsPublicDetailBackfill(listing))
+  const candidates = documents.filter((listing) => refreshAll
+    ? listing.schemaVersion !== "2.0.0"
+    : needsPublicDetailBackfill(listing))
     .filter((listing) => retryTerminal || !["not-found", "gone"].includes(state.attempted[listing.token]?.status));
   const queue = limit > 0 ? candidates.slice(0, limit) : candidates;
-  process.stdout.write(`${JSON.stringify({ event: "backfill-start", candidates: candidates.length, queued: queue.length, intervalMs, concurrency })}\n`);
+  process.stdout.write(`${JSON.stringify({ event: "backfill-start", mode: refreshAll ? "all" : "missing-public-details", candidates: candidates.length, queued: queue.length, intervalMs, concurrency })}\n`);
   let cursor = 0;
   let processed = 0;
+  const runTotals = {};
   let stopRequested = false;
   let lastRequestAt = 0;
   let requestSchedule = Promise.resolve();
@@ -108,9 +129,10 @@ try {
     state.updatedAt = new Date().toISOString();
     state.totals = countResults(state.attempted);
     processed += 1;
+    runTotals[result.status] = (runTotals[result.status] || 0) + 1;
     stateWrites = stateWrites.then(() => writeAtomic(stateFile, state));
     await stateWrites;
-    process.stdout.write(`${JSON.stringify({ event: "backfill-progress", processed, queued: queue.length, totals: state.totals })}\n`);
+    process.stdout.write(`${JSON.stringify({ event: "backfill-progress", processed, queued: queue.length, runTotals, historicalTotals: state.totals })}\n`);
   };
   const worker = async () => {
     while (!stopRequested) {
@@ -154,7 +176,9 @@ try {
   });
   const missingDescription = refreshed.filter((item) => !String(item.description || "").trim()).length;
   const unknownAdvertiser = refreshed.filter((item) => item.advertiserType === "unknown").length;
-  process.stdout.write(`${JSON.stringify({ event: "backfill-complete", total: refreshed.length, missingDescription, unknownAdvertiser, totals: state.totals, stateFile })}\n`);
+  process.stdout.write(`${JSON.stringify({ event: "backfill-complete", total: refreshed.length, missingDescription, unknownAdvertiser, runTotals, historicalTotals: state.totals, stateFile })}\n`);
 } finally {
   await mongoose.disconnect();
 }
+
+if (reclassifyQuality) await runQualityReclassification();

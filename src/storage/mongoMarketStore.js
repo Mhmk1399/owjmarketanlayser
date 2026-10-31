@@ -2,6 +2,7 @@ import mongoose from "mongoose";
 import { Listing } from "../models/listing.js";
 import { ListingObservation } from "../models/listingObservation.js";
 import { CrawlRun, ServiceState } from "../models/crawlState.js";
+import { ScoringScenario } from "../models/scoringScenario.js";
 import { JsonMarketStore, _jsonHelpers } from "./jsonStore.js";
 import { nextLifecycleStatus } from "../collector/listingPolicy.js";
 
@@ -14,6 +15,7 @@ export class MongoMarketStore extends JsonMarketStore {
     mongoUri, mongoDbName, snapshotEvery = 25,
     listingModel = Listing, observationModel = ListingObservation,
     serviceStateModel = ServiceState, crawlRunModel = CrawlRun,
+    scoringScenarioModel = ScoringScenario,
   } = {}) {
     super(paths, logger, { snapshotEvery });
     this.mongoUri = mongoUri;
@@ -22,6 +24,7 @@ export class MongoMarketStore extends JsonMarketStore {
     this.observationModel = observationModel;
     this.serviceStateModel = serviceStateModel;
     this.crawlRunModel = crawlRunModel;
+    this.scoringScenarioModel = scoringScenarioModel;
     this.mongo = null;
   }
 
@@ -36,6 +39,7 @@ export class MongoMarketStore extends JsonMarketStore {
     await Promise.all([
       this.listingModel.init(), this.observationModel.init(),
       this.serviceStateModel.init(), this.crawlRunModel.init(),
+      this.scoringScenarioModel.init(),
     ]);
     const documents = await this.listingModel.find({}).lean();
     this.listings.clear();

@@ -10,6 +10,7 @@ const propertySchema = new Schema({
 }, strict);
 const detailsSchema = new Schema({
   deedType: nullable(String), buildingDirection: nullable(String), unitPosition: nullable(String),
+  landWidth: nullable(String), buildingDensity: nullable(String),
   propertyType: nullable(String), buildingCondition: nullable(String), heating: nullable(String), cooling: nullable(String),
 }, strict);
 const pricingSchema = new Schema({
@@ -43,7 +44,7 @@ const nearbyPlaceSchema = new Schema({
 }, strict);
 
 export const listingSchema = new Schema({
-  schemaVersion: { type: String, required: true, enum: ["1.0.0"] },
+  schemaVersion: { type: String, required: true, enum: ["1.0.0", "2.0.0"] },
   token: { type: String, required: true, immutable: true, match: /^[A-Za-z0-9_-]+$/ },
   url: { type: String, required: true, match: /^https?:\/\// }, title: { type: String, required: true, trim: true },
   description: nullable(String), category: nullable(String), subcategory: nullable(String), city: nullable(String),
@@ -54,7 +55,17 @@ export const listingSchema = new Schema({
   pricing: { type: pricingSchema, required: true }, amenities: { type: amenitiesSchema, required: true },
   attributes: { type: [new Schema({ key: { type: String, required: true }, label: { type: String, required: true }, value: { type: String, required: true } }, strict)], default: [] },
   images: { type: [imageSchema], default: [] }, imageCount: { type: Number, required: true, min: 0 },
-  advertiserType: { type: String, required: true, enum: ["personal", "real-estate-business", "unknown"] }, advertiserSignals: { type: new Schema({ type: { type: String, required: true, enum: ["personal", "real-estate-business", "unknown"] }, isBusiness: nullable(Boolean), hasBusinessBadge: nullable(Boolean) }, strict), required: true },
+  advertiserType: { type: String, required: true, enum: ["personal", "real-estate-business", "unknown"] }, advertiserSignals: { type: new Schema({
+    type: { type: String, required: true, enum: ["personal", "real-estate-business", "unknown"] },
+    isBusiness: nullable(Boolean), hasBusinessBadge: nullable(Boolean), panelType: nullable(String, { match: /^[A-Za-z0-9_-]+$/ }),
+    hasBusinessReference: nullable(Boolean), classificationSource: { type: [String], default: [] },
+    confidence: { type: String, required: true, enum: ["high", "medium", "low"], default: "low" },
+    businessDisplayName: nullable(String),
+  }, strict), required: true },
+  media: { type: new Schema({
+    samePropertyImageClaim: nullable(Boolean),
+    claimSource: nullable(String, { enum: ["poster-declared-public-field", null] }),
+  }, strict), required: true, default: () => ({ samePropertyImageClaim: null, claimSource: null }) },
   coordinates: { type: new Schema({ latitude: nullable(Number, { min: -90, max: 90 }), longitude: nullable(Number, { min: -180, max: 180 }), accuracy: nullable(String), radiusMeters: nullable(Number, { min: 0 }), source: nullable(String) }, strict), required: true },
   nearbyPlaces: { type: [nearbyPlaceSchema], default: [] },
   publication: { type: new Schema({ text: nullable(String), source: nullable(String) }, strict), required: true },

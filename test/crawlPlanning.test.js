@@ -23,6 +23,13 @@ test("adaptive quota gives more budget to an unrepresented area", () => {
   assert.ok(plan.partitions.find((item) => item.area.id === 2).limit > plan.partitions.find((item) => item.area.id === 1).limit);
 });
 
+test("a full-area plan rotates instead of wrapping to the first area", () => {
+  const plan = planAdaptivePartitions(partitions, [], { totalBudget: 6, offset: 0 });
+  assert.equal(plan.nextOffset, 1);
+  const next = planAdaptivePartitions(partitions, [], { totalBudget: 6, offset: plan.nextOffset });
+  assert.equal(next.partitions[0].area.id, 2);
+});
+
 test("request budget accounts by kind and enforces run and minute ceilings", () => {
   let now = 0;
   const budget = new RequestBudget({ maxPerRun: 3, maxPerMinute: 2, now: () => now });

@@ -93,6 +93,7 @@ function postDocument() {
       cat2: "residential-sell",
       cat3: "apartment-sell",
     },
+    webengage: { business_type: "personal" },
     share: { web_url: "https://divar.ir/v/ga5V5az7" },
     contact: {
       phone: "09121111111",
@@ -143,15 +144,57 @@ test("posts-v2 adapter extracts public housing fields and drops contact metadata
   assert.equal(listing.imageCount, 2);
 });
 
-test("posts-v2 adapter extracts only business classification signals", () => {
+test("posts-v2 adapter retains an explicitly public business display name", () => {
   const document = postDocument();
   document.analytics.business_type = "real_estate_agency";
-  document.business_data = { is_business: true, name: "identity must not survive" };
+  document.business_data = { is_business: true, name: "املاک نمونه" };
   const raw = adaptPublicPostDocument(document, discovered);
-  assert.deepEqual(raw.advertiserSignals, {
-    type: "real-estate-business", isBusiness: true, hasBusinessBadge: null,
+  assert.equal(raw.advertiserSignals.type, "real-estate-business");
+  assert.equal(raw.advertiserSignals.isBusiness, true);
+  assert.equal(raw.advertiserSignals.businessDisplayName, "املاک نمونه");
+  assert.equal(raw.advertiserSignals.panelType, "real_estate_agency");
+});
+
+test("premium panel, business reference presence and image claim are extracted without retaining the reference", () => {
+  const document = postDocument();
+  document.analytics.cat3 = "plot-old";
+  document.webengage = {
+    business_type: "premium-panel",
+    business_ref: "public-reference-that-must-not-be-retained",
+  };
+  document.sections.push({
+    section_name: "BUSINESS_SECTION",
+    widgets: [{ widget_type: "LAZY_SECTION", data: { request_data: { post_business_type: "premium-panel" } } }],
+  }, {
+    section_name: "DESCRIPTION",
+    widgets: [{ widget_type: "DESCRIPTION_ROW", data: { text: "توضیحات اصلی ملک" } }],
   });
-  assert.doesNotMatch(JSON.stringify(raw), /identity must not survive/);
+  document.sections[0].widgets.push({
+    widget_type: "UNEXPANDABLE_ROW",
+    data: { title: "تصویر‌ها برای همین ملک است؟", value: "خیر" },
+  });
+  const raw = adaptPublicPostDocument(document, discovered);
+  assert.equal(raw.subcategory, "buy-residential-land");
+  assert.equal(raw.description, "توضیحات اصلی ملک");
+  assert.equal(raw.advertiserSignals.type, "real-estate-business");
+  assert.equal(raw.advertiserSignals.panelType, "premium-panel");
+  assert.equal(raw.advertiserSignals.hasBusinessReference, true);
+  assert.deepEqual(raw.mediaSignals, {
+    samePropertyImageClaim: false,
+    claimSource: "poster-declared-public-field",
+  });
+  assert.doesNotMatch(JSON.stringify(raw), /public-reference-that-must-not-be-retained/);
+
+  const listing = _publicListingHelpers.normalizePublicListing(raw, null);
+  assert.equal(listing.schemaVersion, "2.0.0");
+  assert.equal(listing.media.samePropertyImageClaim, false);
+  assert.equal(listing.advertiserSignals.hasBusinessReference, true);
+});
+
+test("absence of explicit advertiser evidence remains unknown", () => {
+  const document = postDocument();
+  delete document.webengage;
+  assert.equal(adaptPublicPostDocument(document, discovered).advertiserSignals.type, "unknown");
 });
 
 test("description extraction ignores publication-history rows", () => {

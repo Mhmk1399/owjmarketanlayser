@@ -83,6 +83,26 @@ test("advertiser classification separates personal files from real-estate busine
   assert.doesNotMatch(JSON.stringify(business), /advertiserName|agencyName|09121234567/i);
 });
 
+test("public business metadata and poster image claim survive the strict projection", async () => {
+  const listing = toPublicMarketListing(normalizedFixture({
+    advertiser: {
+      type: "real-estate-business", isBusiness: true, hasBusinessBadge: true,
+      panelType: "premium-panel", hasBusinessReference: true,
+      classificationSource: ["public-business-type", "public-business-reference-present"],
+      confidence: "high", businessDisplayName: "املاک نمونه",
+    },
+    media: { samePropertyImageClaim: true, claimSource: "poster-declared-public-field" },
+  }));
+  assert.equal(listing.advertiserSignals.businessDisplayName, "املاک نمونه");
+  assert.equal(listing.advertiserSignals.panelType, "premium-panel");
+  assert.equal(listing.advertiserSignals.hasBusinessReference, true);
+  assert.deepEqual(listing.media, {
+    samePropertyImageClaim: true,
+    claimSource: "poster-declared-public-field",
+  });
+  await new Listing(listing).validate();
+});
+
 test("contact endpoint guard recognizes forbidden URLs", () => {
   assert.equal(isForbiddenContactUrl("https://api.divar.ir/v8/postcontact/web/contact_info_v2/x"), true);
   assert.equal(isForbiddenContactUrl("https://divar.ir/s/tehran/buy-residential"), false);
@@ -148,6 +168,8 @@ test("public listing JSON schema is valid JSON and requires no contact field", a
   assert.equal(schema.additionalProperties, false);
   assert.equal(Object.hasOwn(schema.properties, "contact"), false);
   assert.equal(schema.properties.pricing.properties.currency.const, "TOMAN");
+  assert.deepEqual(schema.properties.schemaVersion.enum, ["1.0.0", "2.0.0"]);
+  assert.equal(schema.properties.media.properties.claimSource.enum[0], "poster-declared-public-field");
 });
 
 test("public extractor has no static contact or token-client dependency", async () => {

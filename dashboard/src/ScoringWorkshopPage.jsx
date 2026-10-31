@@ -48,6 +48,11 @@ export default function ScoringWorkshopPage() {
     catch { return { ...DEFAULT_SCORING_CONFIG }; }
   });
   const [copyStatus, setCopyStatus] = useState("");
+  const [scenarioName, setScenarioName] = useState("");
+  const [scenarioDescription, setScenarioDescription] = useState("");
+  const [savedScenarios, setSavedScenarios] = useState([]);
+  const [saving, setSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState("");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -55,6 +60,12 @@ export default function ScoringWorkshopPage() {
       .then((response) => response.ok ? response.json() : Promise.reject(new Error(`Server returned HTTP ${response.status}`)))
       .then(setData).catch((caught) => { if (caught.name !== "AbortError") setError(caught.message); });
     return () => controller.abort();
+  }, []);
+  useEffect(() => {
+    fetch("/scoring-scenarios", { headers: { accept: "application/json" } })
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`)))
+      .then((payload) => setSavedScenarios(payload.scenarios || []))
+      .catch(() => {});
   }, []);
   useEffect(() => { localStorage.setItem("owj-scoring-workshop", JSON.stringify(config)); }, [config]);
 
@@ -85,6 +96,25 @@ export default function ScoringWorkshopPage() {
     catch { setCopyStatus("مرورگر اجازه کپی نداد"); }
     window.setTimeout(() => setCopyStatus(""), 2500);
   };
+  const saveScenario = async (event) => {
+    event.preventDefault();
+    if (!scenarioName.trim() || !thresholdsValid) return;
+    setSaving(true); setSaveStatus("");
+    try {
+      const response = await fetch("/scoring-scenarios", {
+        method: "POST",
+        headers: { accept: "application/json", "content-type": "application/json" },
+        body: JSON.stringify({ name: scenarioName.trim(), description: scenarioDescription.trim(), config }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.message || payload.error || `HTTP ${response.status}`);
+      setSavedScenarios((current) => [payload, ...current]);
+      setScenarioName(""); setScenarioDescription("");
+      setSaveStatus("سناریو در پایگاه داده ذخیره شد و اکنون در فهرست آگهی‌ها قابل استفاده است.");
+    } catch (caught) {
+      setSaveStatus(`ذخیره سناریو ناموفق بود: ${caught.message}`);
+    } finally { setSaving(false); }
+  };
 
   if (!data && !error) return <LoadingPage message="در حال آماده‌سازی کارگاه امتیازدهی" />;
   if (error) return <ErrorPage message={error} />;
@@ -102,6 +132,26 @@ export default function ScoringWorkshopPage() {
 
       <div className="workshop-layout">
         <aside className="workshop-sidebar">
+          <form className="workshop-panel scenario-save-form" onSubmit={saveScenario} aria-busy={saving}>
+            <div className="workshop-panel__head"><div><span>ذخیره و استفاده</span><h2>ساخت سناریوی امتیازدهی</h2></div></div>
+            <p className="workshop-help">همه تنظیم‌های فعلی، امتیاز محله‌ها و حدنصاب‌ها با این نام ذخیره می‌شوند.</p>
+            <label htmlFor="scenario-name">نام سناریو<input id="scenario-name" value={scenarioName} maxLength={100} required
+              onChange={(event) => setScenarioName(event.target.value)} placeholder="مثلاً خرید محافظه‌کارانه" /></label>
+            <label htmlFor="scenario-description">توضیح کوتاه<textarea id="scenario-description" value={scenarioDescription} maxLength={500}
+              onChange={(event) => setScenarioDescription(event.target.value)} placeholder="این سناریو برای چه نوع جستجویی ساخته شده است؟" /></label>
+            <button className="workshop-copy" type="submit" disabled={saving || !scenarioName.trim() || !thresholdsValid}>
+              {saving ? "در حال ذخیره…" : "ذخیره سناریو و فعال‌کردن در آگهی‌ها"}
+            </button>
+            <p className="scenario-save-status" aria-live="polite">{saveStatus}</p>
+            {!!savedScenarios.length && <div className="saved-scenario-list" aria-label="سناریوهای ذخیره‌شده">
+              {savedScenarios.slice(0, 6).map((scenario) => <article key={scenario.scenarioId}>
+                <button type="button" onClick={() => setConfig({ ...DEFAULT_SCORING_CONFIG, ...scenario.config })}>
+                  <b>{scenario.name}</b><small>بارگذاری تنظیم‌ها در آزمایشگاه</small>
+                </button>
+                <a href={`/catalog?scenario=${encodeURIComponent(scenario.scenarioId)}`}>مشاهده رتبه‌بندی</a>
+              </article>)}
+            </div>}
+          </form>
           <section className="workshop-panel">
             <div className="workshop-panel__head"><div><span>شروع سریع</span><h2>الگوهای آماده</h2></div>
               <button type="button" onClick={() => setConfig({ ...DEFAULT_SCORING_CONFIG })}>بازگشت به پیشنهاد اولیه</button></div>

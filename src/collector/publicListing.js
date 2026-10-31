@@ -18,8 +18,10 @@ const ATTRIBUTE_ALLOWLIST = Object.freeze({
   "اتاق": "rooms", "تعداد اتاق": "rooms", "طبقه": "floor", "تعداد طبقات": "totalFloors",
   "تعداد واحد در طبقه": "unitsPerFloor", "سند": "deedType", "نوع سند": "deedType",
   "جهت ساختمان": "buildingDirection", "موقعیت واحد": "unitPosition", "نوع ملک": "propertyType",
+  "جهت ملک": "buildingDirection", "موقعیت ملک": "unitPosition", "عرض ملک": "landWidth",
+  "تراکم ساخت": "buildingDensity",
   "وضعیت بنا": "buildingCondition", "سیستم گرمایش": "heating", "سیستم سرمایش": "cooling",
-  "قیمت کل": "price", "قیمت فروش": "price", "قیمت هر متر": "pricePerMeter",
+  "قیمت کل": "price", "قیمت کل ملک": "price", "قیمت فروش": "price", "قیمت هر متر": "pricePerMeter",
   "ودیعه": "deposit", "رهن": "deposit", "اجاره": "rent",
 });
 const AMENITY_ALLOWLIST = Object.freeze([
@@ -141,15 +143,17 @@ function normalizePublicRaw(raw) {
       totalFloors: floorNumbers[1] ?? numberFrom(attribute(raw, /^تعداد طبقات$/)),
       unitsPerFloor: numberFrom(attribute(raw, /^تعداد واحد در طبقه$/)),
       deedType: safeText(attribute(raw, /^(سند|نوع سند)$/), 200),
-      buildingDirection: safeText(attribute(raw, /^جهت ساختمان$/), 200),
-      unitPosition: safeText(attribute(raw, /^موقعیت واحد$/), 200),
+      buildingDirection: safeText(attribute(raw, /^جهت (?:ساختمان|ملک)$/), 200),
+      unitPosition: safeText(attribute(raw, /^موقعیت (?:واحد|ملک)$/), 200),
+      landWidth: safeText(attribute(raw, /^عرض ملک$/), 200),
+      buildingDensity: safeText(attribute(raw, /^تراکم ساخت$/), 200),
       propertyType: safeText(attribute(raw, /^نوع ملک$/), 200),
       buildingCondition: safeText(attribute(raw, /^وضعیت بنا$/), 200),
       heating: safeText(attribute(raw, /^سیستم گرمایش$/), 200),
       cooling: safeText(attribute(raw, /^سیستم سرمایش$/), 200),
     },
     pricing: {
-      price: moneyFrom(attribute(raw, /^(قیمت کل|قیمت فروش)$/)),
+      price: moneyFrom(attribute(raw, /^(قیمت کل(?: ملک)?|قیمت فروش)$/)),
       pricePerMeter: moneyFrom(attribute(raw, /^قیمت هر متر$/)),
       deposit: moneyFrom(attribute(raw, /^(ودیعه|رهن)/)),
       rent: moneyFrom(attribute(raw, /^اجاره/)),
@@ -158,6 +162,11 @@ function normalizePublicRaw(raw) {
     amenities: Object.fromEntries(AMENITY_ALLOWLIST.map((key) => [key,
       typeof raw.amenities?.[key] === "boolean" ? raw.amenities[key] : null])),
     advertiser: raw.advertiserSignals || { type: null, isBusiness: null, hasBusinessBadge: null },
+    media: {
+      samePropertyImageClaim: nullableBoolean(raw.mediaSignals?.samePropertyImageClaim),
+      claimSource: raw.mediaSignals?.claimSource === "poster-declared-public-field"
+        ? "poster-declared-public-field" : null,
+    },
     images: Array.isArray(raw.images) ? raw.images.map(safeImage).filter(Boolean) : [],
     coordinates: coordinatesFrom(raw), quality: { score: 0, missingFields: [] },
   };
@@ -236,6 +245,11 @@ function advertiserClassification(advertiser = {}) {
   return "unknown";
 }
 
+function safePanelType(value) {
+  const clean = safeText(value, 100);
+  return clean && /^[A-Za-z0-9_-]+$/.test(clean) ? clean : null;
+}
+
 function fingerprintFor(listing) {
   const source = JSON.stringify({
     title: listing.title,
@@ -253,6 +267,7 @@ function fingerprintFor(listing) {
     amenities: listing.amenities,
     advertiserType: listing.advertiserType,
     advertiserSignals: listing.advertiserSignals,
+    media: listing.media,
     imageCount: listing.imageCount,
     publishedText: listing.publishedText,
     quality: listing.quality,
@@ -267,6 +282,7 @@ export function validatePublicMarketListing(listing) {
     "crawlPartition", "publication", "locationProvenance", "extraction", "quality", "lifecycle",
     "firstSeenAt", "lastSeenAt", "contentFingerprint",
   ];
+  if (listing?.schemaVersion === "2.0.0") required.push("media");
   for (const key of required) {
     if (listing?.[key] === undefined) {
       throw new Error(`Public listing schema violation: ${key} is required`);
@@ -286,7 +302,7 @@ export function validatePublicMarketListing(listing) {
     }
   };
   inspect(listing);
-  if (listing.schemaVersion !== "1.0.0") throw new Error("Public listing schema version is unsupported");
+  if (!["1.0.0", "2.0.0"].includes(listing.schemaVersion)) throw new Error("Public listing schema version is unsupported");
   if (!/^[A-Za-z0-9_-]+$/.test(listing.token)) throw new Error("Public listing token is invalid");
   if (listing.pricing.currency !== "TOMAN") throw new Error("Public listing currency must be TOMAN");
   if (!Array.isArray(listing.images) || listing.imageCount !== listing.images.length) {
@@ -313,7 +329,7 @@ export function toPublicMarketListing(
   const pricePerMeter = derivedPricePerMeter ?? advertisedPricePerMeter;
 
   const listing = {
-    schemaVersion: "1.0.0",
+    schemaVersion: "2.0.0",
     token: normalized.token,
     url: normalized.url,
     title: redactContactText(normalized.title),
@@ -358,6 +374,8 @@ export function toPublicMarketListing(
       deedType: safeText(normalized.property?.deedType, 200),
       buildingDirection: safeText(normalized.property?.buildingDirection, 200),
       unitPosition: safeText(normalized.property?.unitPosition, 200),
+      landWidth: safeText(normalized.property?.landWidth, 200),
+      buildingDensity: safeText(normalized.property?.buildingDensity, 200),
       propertyType: safeText(normalized.property?.propertyType, 200),
       buildingCondition: safeText(normalized.property?.buildingCondition, 200),
       heating: safeText(normalized.property?.heating, 200),
@@ -378,6 +396,20 @@ export function toPublicMarketListing(
       type: advertiserClassification(normalized.advertiser),
       isBusiness: nullableBoolean(normalized.advertiser?.isBusiness),
       hasBusinessBadge: nullableBoolean(normalized.advertiser?.hasBusinessBadge),
+      panelType: safePanelType(normalized.advertiser?.panelType),
+      hasBusinessReference: nullableBoolean(normalized.advertiser?.hasBusinessReference),
+      classificationSource: Array.isArray(normalized.advertiser?.classificationSource)
+        ? normalized.advertiser.classificationSource.map((value) => safeText(value, 100)).filter(Boolean)
+        : [],
+      confidence: ["high", "medium", "low"].includes(normalized.advertiser?.confidence)
+        ? normalized.advertiser.confidence : "low",
+      businessDisplayName: advertiserClassification(normalized.advertiser) === "real-estate-business"
+        ? safeText(normalized.advertiser?.businessDisplayName, 300) : null,
+    },
+    media: {
+      samePropertyImageClaim: nullableBoolean(normalized.media?.samePropertyImageClaim),
+      claimSource: normalized.media?.claimSource === "poster-declared-public-field"
+        ? "poster-declared-public-field" : null,
     },
     coordinates: {
       latitude: finite(normalized.coordinates?.latitude),
@@ -439,8 +471,9 @@ export function toPublicMarketListing(
 }
 
 function normalizePublicListing(raw, existing, discovered = null) {
-  // Public text can accidentally contain personal contact details. The analytics
-  // record does not retain descriptions, names, contact state, or phone fields.
+  // Public text can accidentally contain personal contact details. Keep the
+  // sanitized property description and explicit public business display name,
+  // but never retain personal contact state, phone fields, or free-text identities.
   const normalized = normalizePublicRaw(raw);
   return toPublicMarketListing(normalized, existing, new Date().toISOString(), discovered);
 }

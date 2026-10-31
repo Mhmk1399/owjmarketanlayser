@@ -6,6 +6,8 @@ import { buildScoreDetail, buildScoringAnalytics, buildScoringWorkshop } from ".
 import { buildLocationView } from "./locationViews.js";
 import { fetchNearbyPlaces } from "../services/neshanPlaces.js";
 import { buildDataQualityBaseline } from "./dataQuality.js";
+import { ScoringScenario } from "../models/scoringScenario.js";
+import { calculateSavedScenario, scenarioDocument } from "../scoring/scenarioService.js";
 
 function sendJson(response, status, value) {
   const body = JSON.stringify(value, null, 2);
@@ -88,6 +90,58 @@ async function sendStatic(response, file, type) {
 function numberParam(value, fallback, minimum, maximum) {
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) ? Math.min(maximum, Math.max(minimum, parsed)) : fallback;
+}
+
+async function readJsonBody(request, maximumBytes = 1_000_000) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > maximumBytes) throw Object.assign(new Error("Request body is too large"), { status: 413 });
+    chunks.push(chunk);
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+  } catch {
+    throw Object.assign(new Error("Request body must be valid JSON"), { status: 400 });
+  }
+}
+
+function matchesListingQuery(listing, url) {
+  const value = (name) => url.searchParams.get(name);
+  const numeric = (name) => {
+    const number = Number(value(name));
+    return value(name) !== null && Number.isFinite(number) ? number : null;
+  };
+  const district = value("district");
+  if (district && district !== "all" && listing.neighborhood !== district && listing.district !== district) return false;
+  const category = value("category");
+  if (category && category !== "all" && listing.subcategory !== category && listing.crawlPartition?.category !== category) return false;
+  const advertiser = value("advertiserType");
+  if (advertiser && advertiser !== "all" && listing.advertiserType !== advertiser) return false;
+  const readiness = value("readiness");
+  if (readiness && readiness !== "all" && listing.quality?.outcome !== readiness) return false;
+  const status = value("status");
+  if (status && status !== "all" && listing.lifecycle?.status !== status) return false;
+  const query = String(value("q") || "").trim().toLocaleLowerCase("fa");
+  if (query && !`${listing.title} ${listing.description || ""} ${listing.neighborhood || ""} ${listing.token}`
+    .toLocaleLowerCase("fa").includes(query)) return false;
+  const ranges = [
+    [listing.pricing?.price, numeric("minPrice"), numeric("maxPrice")],
+    [listing.pricing?.pricePerMeter, numeric("minPricePerMeter"), numeric("maxPricePerMeter")],
+    [listing.property?.area, numeric("minArea"), numeric("maxArea")],
+  ];
+  if (ranges.some(([item, minimum, maximum]) => (minimum !== null && item < minimum) || (maximum !== null && item > maximum))) return false;
+  if (numeric("minRooms") !== null && listing.property?.rooms < numeric("minRooms")) return false;
+  if (numeric("minYear") !== null && listing.property?.constructionYear < numeric("minYear")) return false;
+  if (url.searchParams.getAll("amenity").some((key) => listing.amenities?.[key] !== true)) return false;
+  return true;
+}
+
+function plainScenario(document) {
+  const value = typeof document?.toObject === "function" ? document.toObject({ flattenMaps: true }) : document;
+  const { _id, ...scenario } = JSON.parse(JSON.stringify(value));
+  return scenario;
 }
 
 function externalListing(listing) {
@@ -287,6 +341,86 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
         const document = await readScoredDocument();
         if (!document?.listings) return sendJson(response, 404, { error: "scores-not-generated" });
         return sendJson(response, 200, buildScoringWorkshop(document));
+      }
+
+      if (request.method === "GET" && url.pathname === "/scoring-scenarios") {
+        if (!config.mongoUri) return sendJson(response, 503, { error: "mongodb-required" });
+        const scenarios = await ScoringScenario.find({ active: true }).sort({ updatedAt: -1 }).lean({ flattenMaps: true });
+        return sendJson(response, 200, { scenarios: scenarios.map(plainScenario) });
+      }
+
+      if (request.method === "POST" && url.pathname === "/scoring-scenarios") {
+        if (!config.mongoUri) return sendJson(response, 503, { error: "mongodb-required" });
+        const body = await readJsonBody(request);
+        const scoredDocument = await readScoredDocument();
+        const scenario = scenarioDocument(body, scoredDocument?.scoringVersion);
+        await ScoringScenario.create(scenario);
+        return sendJson(response, 201, plainScenario(scenario));
+      }
+
+      const scenarioUpdateMatch = url.pathname.match(/^\/scoring-scenarios\/([A-Za-z0-9_-]+)$/);
+      if (request.method === "PUT" && scenarioUpdateMatch) {
+        if (!config.mongoUri) return sendJson(response, 503, { error: "mongodb-required" });
+        const existing = await ScoringScenario.findOne({ scenarioId: scenarioUpdateMatch[1] }).lean({ flattenMaps: true });
+        if (!existing) return sendJson(response, 404, { error: "scenario-not-found" });
+        const body = await readJsonBody(request);
+        const scoredDocument = await readScoredDocument();
+        const scenario = scenarioDocument(body, scoredDocument?.scoringVersion, plainScenario(existing));
+        await ScoringScenario.replaceOne({ scenarioId: scenario.scenarioId }, scenario, { runValidators: true });
+        return sendJson(response, 200, plainScenario(scenario));
+      }
+
+      const scenarioScoresMatch = url.pathname.match(/^\/scoring-scenarios\/([A-Za-z0-9_-]+)\/scores$/);
+      if (request.method === "GET" && scenarioScoresMatch) {
+        const [stored, scoredDocument] = await Promise.all([
+          ScoringScenario.findOne({ scenarioId: scenarioScoresMatch[1], active: true }).lean({ flattenMaps: true }),
+          readScoredDocument(),
+        ]);
+        if (!stored) return sendJson(response, 404, { error: "scenario-not-found" });
+        if (!scoredDocument?.listings) return sendJson(response, 404, { error: "scores-not-generated" });
+        const calculated = calculateSavedScenario(scoredDocument, plainScenario(stored));
+        const offset = numberParam(url.searchParams.get("offset"), 0, 0, 1_000_000);
+        const limit = numberParam(url.searchParams.get("limit"), 100, 1, 500);
+        const rows = calculated.rows.flatMap((row) => {
+          const listing = store.getListing(row.token);
+          if (!listing || !matchesListingQuery(listing, url)) return [];
+          return [{
+            ...externalListing(listing),
+            scenarioScore: {
+              scenarioId: calculated.scenarioId, scenarioName: calculated.name,
+              rank: row.scenario.rank, recommendation: row.scenario.recommendation,
+              band: row.scenario.band, dealValue: row.scenario.dealValue,
+              propertyQuality: row.scenario.property.score,
+              neighborhoodScore: row.scenario.neighborhoodScore,
+              confidenceGate: Number(row.scenario.confidenceGate.toFixed(4)),
+              riskGate: Number(row.scenario.riskGate.toFixed(4)),
+            },
+          }];
+        });
+        return sendJson(response, 200, {
+          scenario: { scenarioId: calculated.scenarioId, name: calculated.name, description: calculated.description },
+          summary: calculated.summary, total: rows.length, offset, limit,
+          listings: rows.slice(offset, offset + limit),
+        });
+      }
+
+      const listingScenarioScoresMatch = url.pathname.match(/^\/listings\/([A-Za-z0-9_-]+)\/scenario-scores$/);
+      if (request.method === "GET" && listingScenarioScoresMatch) {
+        const scoredDocument = await readScoredDocument();
+        if (!scoredDocument?.listings) return sendJson(response, 404, { error: "scores-not-generated" });
+        const scenarios = await ScoringScenario.find({ active: true }).sort({ updatedAt: -1 }).lean({ flattenMaps: true });
+        const scores = scenarios.flatMap((stored) => {
+          const calculated = calculateSavedScenario(scoredDocument, plainScenario(stored));
+          const row = calculated.rows.find((item) => item.token === listingScenarioScoresMatch[1]);
+          return row ? [{
+            scenarioId: calculated.scenarioId, name: calculated.name,
+            rank: row.scenario.rank, recommendation: row.scenario.recommendation,
+            band: row.scenario.band, dealValue: row.scenario.dealValue,
+            propertyQuality: row.scenario.property.score,
+            neighborhoodScore: row.scenario.neighborhoodScore,
+          }] : [];
+        });
+        return sendJson(response, 200, { scores });
       }
 
       if (request.method === "GET" && url.pathname === "/scoring-report") {
@@ -537,7 +671,13 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
         path: url.pathname,
         error: error.stack || error.message,
       });
-      return sendJson(response, 500, { error: "internal-error", requestId });
+      const errorStatus = Number.isInteger(error.status) && error.status >= 400 && error.status < 500
+        ? error.status : 500;
+      return sendJson(response, errorStatus, {
+        error: errorStatus === 500 ? "internal-error" : "invalid-request",
+        message: errorStatus === 500 ? undefined : error.message,
+        requestId,
+      });
     }
   });
   return server;

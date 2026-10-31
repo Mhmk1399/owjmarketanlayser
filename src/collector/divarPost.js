@@ -101,7 +101,7 @@ function subcategoryFor(document, breadcrumbs) {
   if (/temporary|daily|villa-suite|short.?term/.test(joined)) return "short-term-rent";
   if (/apartment.*sell|sell.*apartment/.test(joined)) return "buy-residential-apartment";
   if (/(house|villa).*sell|sell.*(house|villa)/.test(joined)) return "buy-residential-villa";
-  if (/(land|old-house).*sell|sell.*(land|old-house)/.test(joined)) return "buy-residential-land";
+  if (/(land|old-house|plot-old).*sell|sell.*(land|old-house|plot-old)|plot-old/.test(joined)) return "buy-residential-land";
   if (/apartment.*rent|rent.*apartment/.test(joined)) return "rent-residential-apartment";
   if (/(house|villa).*rent|rent.*(house|villa)/.test(joined)) return "rent-residential-villa";
   if (/commercial|office|shop|industrial|agricultural/.test(joined) && /sell/.test(joined)) return "buy-commercial";
@@ -193,25 +193,59 @@ function imagesFrom(widgets) {
 }
 
 function advertiserSignalsFrom(widgets, document) {
-  const searchable = widgets
-    .filter((widget) => /BUSINESS|AGENCY|DEALER|PRO|SELLER|POSTER/.test(widget.widget_type))
-    .map((widget) => `${widget.widget_type} ${widget.data?.title || ""} ${widget.data?.subtitle || ""} ${widget.data?.business_type || ""}`)
-    .join(" ");
-  const analyticsType = text(document.analytics?.business_type)
+  const businessWidgets = widgets.filter((widget) =>
+    /BUSINESS|AGENCY|DEALER|PRO|SELLER|POSTER|LAZY_SECTION/.test(widget.widget_type));
+  const widgetPanelType = businessWidgets
+    .map((widget) => text(widget.data?.request_data?.post_business_type)
+      || text(widget.data?.business_type)
+      || text(widget.data?.post_business_type))
+    .find(Boolean);
+  const panelType = text(document.analytics?.business_type)
     || text(document.webengage?.business_type)
-    || text(document.analytics?.user_type);
+    || text(document.analytics?.user_type)
+    || widgetPanelType;
   const businessFlag = document.business_data?.is_business
     ?? document.business?.is_business
     ?? widgets.map((widget) => widget.data?.is_business).find((value) => typeof value === "boolean");
-  const businessMatch = /املاک|مشاور|بنگاه|agency|business|dealer|professional/i.test(`${analyticsType || ""} ${searchable}`);
-  // On the public posts-v2 document, business advertisers receive explicit
-  // business widgets/flags. Their absence is the platform's public personal
-  // classification signal; HTML fallback remains unknown unless it has text evidence.
-  const isBusiness = typeof businessFlag === "boolean" ? businessFlag : businessMatch ? true : false;
+  const hasBusinessReference = Boolean(text(document.webengage?.business_ref)
+    || text(document.analytics?.business_ref)
+    || text(document.business_ref));
+  const searchable = businessWidgets
+    .map((widget) => `${widget.widget_type} ${widget.data?.title || ""} ${widget.data?.subtitle || ""} ${widget.data?.business_type || ""}`)
+    .join(" ");
+  const explicitPersonal = /^(?:personal|private|individual)$/i.test(panelType || "");
+  const businessMatch = /املاک|آژانس|بنگاه|agency|business|dealer|professional|premium(?:-|_)?panel|(?:^|[-_])panel$/i
+    .test(`${panelType || ""} ${searchable}`);
+  const hasBusinessSection = businessWidgets.some((widget) =>
+    /BUSINESS|AGENCY|DEALER|PRO/.test(widget.widget_type)
+      || Boolean(text(widget.data?.request_data?.post_business_type)));
+  const isBusiness = typeof businessFlag === "boolean"
+    ? businessFlag
+    : businessMatch || hasBusinessReference || hasBusinessSection
+      ? true
+      : explicitPersonal ? false : null;
+  const classificationSource = [
+    typeof businessFlag === "boolean" ? "public-business-flag" : null,
+    panelType ? "public-business-type" : null,
+    hasBusinessReference ? "public-business-reference-present" : null,
+    hasBusinessSection ? "public-business-section" : null,
+  ].filter(Boolean);
+  const explicitBusiness = isBusiness === true;
+  const businessDisplayName = explicitBusiness
+    ? text(document.business_data?.name)
+      || text(document.business?.name)
+      || businessWidgets.map((widget) => text(widget.data?.business_name)).find(Boolean)
+      || null
+    : null;
   return {
     type: isBusiness === true ? "real-estate-business" : isBusiness === false ? "personal" : "unknown",
     isBusiness,
-    hasBusinessBadge: /BUSINESS|AGENCY|DEALER|PRO/.test(searchable) ? true : isBusiness === false ? false : null,
+    hasBusinessBadge: hasBusinessSection ? true : explicitPersonal ? false : null,
+    panelType,
+    hasBusinessReference,
+    classificationSource,
+    confidence: classificationSource.length ? "high" : "low",
+    businessDisplayName,
   };
 }
 
@@ -227,7 +261,13 @@ function mapLocationFrom(widgets) {
   return firstWidget(widgets, "MAP_ROW")?.data?.location || null;
 }
 
-function descriptionFrom(widgets, document) {
+function descriptionFrom(sections, widgets, document) {
+  const descriptionSection = sections.find((section) => section?.section_name === "DESCRIPTION");
+  for (const widget of collectWidgets(descriptionSection || {})) {
+    if (!/^(?:POST_DESCRIPTION|EXPANDABLE_TEXT|DESCRIPTION|DESCRIPTION_ROW)$/.test(widget.widget_type)) continue;
+    const value = text(widget.data?.text) || text(widget.data?.description) || text(widget.data?.value);
+    if (value) return value;
+  }
   const priority = ["POST_DESCRIPTION", "EXPANDABLE_TEXT", "DESCRIPTION", "DESCRIPTION_ROW"];
   for (const type of priority) for (const widget of widgets) {
     if (widget.widget_type !== type) continue;
@@ -235,6 +275,18 @@ function descriptionFrom(widgets, document) {
     if (value && !/انتشار آگهی|آخرین به.?روز.?رسانی|تاریخ انتشار/.test(value)) return value;
   }
   return text(document.seo?.web_info?.description) || text(document.seo?.description) || null;
+}
+
+function mediaSignalsFrom(attributes) {
+  const entry = Object.entries(attributes).find(([label]) =>
+    /تصویر(?:ها|‌ها)?\s+برای\s+همین\s+ملک\s+است/.test(label.replace(/\u200c/g, "‌")));
+  if (!entry) return { samePropertyImageClaim: null, claimSource: null };
+  const value = String(entry[1]).trim();
+  const claim = /^(?:بله|آری|yes)$/i.test(value) ? true : /^(?:خیر|نه|no)$/i.test(value) ? false : null;
+  return {
+    samePropertyImageClaim: claim,
+    claimSource: claim === null ? null : "poster-declared-public-field",
+  };
 }
 
 export function adaptPublicPostDocument(document, discovered) {
@@ -250,6 +302,7 @@ export function adaptPublicPostDocument(document, discovered) {
     });
   }
   const widgets = collectWidgets(document.sections);
+  const structuredAttributes = attributesFrom(widgets);
   const breadcrumbs = breadcrumbsFrom(widgets, document);
   const titleWidget = firstWidget(widgets, "LEGEND_TITLE_ROW")?.data;
   const breadcrumbWidget = firstWidget(widgets, "BREADCRUMB")?.data;
@@ -268,9 +321,10 @@ export function adaptPublicPostDocument(document, discovered) {
     neighborhood: text(document.seo?.web_info?.district_persian),
     sourceNeighborhoodSlug: text(document.seo?.web_info?.district_slug),
     publishedText: text(publishedWidget?.title),
-    description: descriptionFrom(widgets, document),
+    description: descriptionFrom(document.sections, widgets, document),
     breadcrumbs,
-    structuredAttributes: attributesFrom(widgets),
+    structuredAttributes,
+    mediaSignals: mediaSignalsFrom(structuredAttributes),
     amenities: amenitiesFrom(widgets),
     images: imagesFrom(widgets),
     advertiserSignals: advertiserSignalsFrom(widgets, document),

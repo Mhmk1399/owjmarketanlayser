@@ -46,7 +46,12 @@ export function planAdaptivePartitions(partitions, listings, {
   }
   return {
     partitions: planned,
-    nextOffset: partitions.length ? (offset + selected.length) % partitions.length : 0,
+    // A full 168-area plan used to advance by 168 and therefore wrap back to
+    // the first Persian-letter area forever. Rotate at least one area between
+    // runs; the crawler also checkpoints this cursor after each attempted area.
+    nextOffset: partitions.length
+      ? (offset + (selected.length === partitions.length ? 1 : selected.length)) % partitions.length
+      : 0,
     totalBudget: assigned,
   };
 }
