@@ -76,6 +76,17 @@ function displayPublication(value) {
   return persianText(value);
 }
 
+function nearbyTravel(place) {
+  const distance = Number.isFinite(place.routeDistanceMeters)
+    ? place.routeDistanceMeters : place.distanceMeters;
+  const duration = Number.isFinite(place.routeDurationSeconds)
+    ? Math.max(1, Math.round(place.routeDurationSeconds / 60)) : null;
+  return {
+    distance: `${formatNumber(distance)} متر`,
+    duration: duration === null ? null : `${formatNumber(duration)} دقیقه پیاده`,
+  };
+}
+
 /* Presentation-only, component-scoped styles; no external CSS file. */
 const DETAIL_CSS = `
 /* All presentation rules are intentionally embedded in SavedListingDetailPage.jsx.
@@ -693,8 +704,12 @@ const DETAIL_CSS = `
   color: ${T.textMuted}; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere;
 }
 .owj-detail-page .nearby-place-list article b {
+  display: flex; flex-direction: column; align-items: flex-end; gap: 3px;
   color: ${T.text}; flex: none; font-size: 12px; font-weight: 800;
   white-space: nowrap;
+}
+.owj-detail-page .nearby-place-list article b small {
+  color: ${T.secondaryDark}; font-size: 10px; font-weight: 750;
 }
 .owj-detail-page .nearby-place-list > p {
   grid-column: 1/-1;
@@ -1324,20 +1339,26 @@ export default function SavedListingDetailPage({ token }) {
               places={listing.nearbyPlaces || []}
             />
             <div className="nearby-place-list">
-              {(listing.nearbyPlaces || []).map((place) => (
-                <article
-                  key={`${place.category}-${place.title}-${place.distanceMeters}`}
-                >
-                  <span>
-                    {place.category === "metro-station" ? "مترو" : "اتوبوس"}
-                  </span>
-                  <div>
-                    <strong>{persianText(place.title)}</strong>
-                    <small>{persianText(place.address || "نشانی عمومی ثبت نشده")}</small>
-                  </div>
-                  <b>{formatNumber(place.distanceMeters)} متر</b>
-                </article>
-              ))}
+              {(listing.nearbyPlaces || []).map((place) => {
+                const travel = nearbyTravel(place);
+                return (
+                  <article key={place.poiHash || `${place.category}-${place.title}-${place.distanceMeters}`}>
+                    <span>{place.category === "metro-station" ? "مترو" : "اتوبوس"}</span>
+                    <div>
+                      <strong>{persianText(place.title)}</strong>
+                      <small>
+                        {place.routeMode === "pedestrian"
+                          ? "مسیر پیاده محاسبه‌شده توسط نشان"
+                          : "فاصله برآوردی سرویس مکان‌های نزدیک نشان"}
+                      </small>
+                    </div>
+                    <b>
+                      {travel.distance}
+                      {travel.duration && <small>{travel.duration}</small>}
+                    </b>
+                  </article>
+                );
+              })}
               {!listing.nearbyPlaces?.length && (
                 <p>هنوز مکان عمومی اطراف این ملک دریافت نشده است.</p>
               )}

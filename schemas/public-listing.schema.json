@@ -210,6 +210,7 @@
         "required": ["category", "title", "address", "coordinates", "distanceMeters", "source", "fetchedAt"],
         "properties": {
           "category": { "enum": ["bus-station", "metro-station"] },
+          "layer": { "enum": ["bus_station", "metro_entrance", null] },
           "title": { "type": "string", "minLength": 1, "maxLength": 160 },
           "address": { "type": ["string", "null"], "maxLength": 300 },
           "coordinates": {
@@ -217,7 +218,14 @@
             "properties": { "latitude": { "type": "number", "minimum": -90, "maximum": 90 }, "longitude": { "type": "number", "minimum": -180, "maximum": 180 } }
           },
           "distanceMeters": { "type": "number", "minimum": 0 },
-          "source": { "const": "neshan-search" },
+          "straightLineDistanceMeters": { "type": ["number", "null"], "minimum": 0 },
+          "nearbyDistanceMeters": { "type": ["number", "null"], "minimum": 0 },
+          "nearbyDurationSeconds": { "type": ["number", "null"], "minimum": 0 },
+          "routeDistanceMeters": { "type": ["number", "null"], "minimum": 0 },
+          "routeDurationSeconds": { "type": ["number", "null"], "minimum": 0 },
+          "routeMode": { "enum": ["pedestrian", null] },
+          "poiHash": { "type": ["string", "null"], "maxLength": 500, "pattern": "^[A-Za-z0-9_-]+$" },
+          "source": { "enum": ["neshan-search", "neshan-nearby"] },
           "fetchedAt": { "type": "string", "format": "date-time" }
         }
       }

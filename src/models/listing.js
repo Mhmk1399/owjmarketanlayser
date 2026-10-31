@@ -37,9 +37,18 @@ const lifecycleSchema = new Schema({
 }, strict);
 const nearbyPlaceSchema = new Schema({
   category: { type: String, required: true, enum: ["bus-station", "metro-station"] },
-  title: { type: String, required: true, trim: true }, address: nullable(String),
+  layer: nullable(String, { enum: ["bus_station", "metro_entrance"] }),
+  title: { type: String, required: true, trim: true, maxlength: 160 }, address: nullable(String, { maxlength: 300 }),
   coordinates: { type: new Schema({ latitude: { type: Number, required: true, min: -90, max: 90 }, longitude: { type: Number, required: true, min: -180, max: 180 } }, strict), required: true },
-  distanceMeters: { type: Number, required: true, min: 0 }, source: { type: String, required: true, enum: ["neshan-search"] },
+  // distanceMeters remains the compatibility field used by the existing UI.
+  // For enriched records it is the pedestrian distance when available.
+  distanceMeters: { type: Number, required: true, min: 0 },
+  straightLineDistanceMeters: nullable(Number, { min: 0 }),
+  nearbyDistanceMeters: nullable(Number, { min: 0 }), nearbyDurationSeconds: nullable(Number, { min: 0 }),
+  routeDistanceMeters: nullable(Number, { min: 0 }), routeDurationSeconds: nullable(Number, { min: 0 }),
+  routeMode: nullable(String, { enum: ["pedestrian"] }),
+  poiHash: nullable(String, { maxlength: 500, match: /^[A-Za-z0-9_-]+$/ }),
+  source: { type: String, required: true, enum: ["neshan-search", "neshan-nearby"] },
   fetchedAt: { type: Date, required: true },
 }, strict);
 

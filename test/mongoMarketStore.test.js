@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { MongoMarketStore } from "../src/storage/mongoMarketStore.js";
+import { Listing } from "../src/models/listing.js";
 import { ListingObservation } from "../src/models/listingObservation.js";
 import { CrawlRun, ServiceState } from "../src/models/crawlState.js";
 import { toPublicMarketListing } from "../src/collector/publicListing.js";
@@ -39,6 +40,22 @@ test("ListingObservation is strict and validates a complete public snapshot", as
     eventType: "created", contentFingerprint: value.contentFingerprint, snapshot: value,
   }).validate();
   assert.throws(() => new ListingObservation({ unexpected: true }), /strict mode/i);
+});
+
+test("Listing validates the enriched Neshan nearby and pedestrian route allowlist", async () => {
+  const value = listing();
+  value.nearbyPlaces = [{
+    category: "metro-station", layer: "metro_entrance", title: "ایستگاه مترو",
+    address: null, coordinates: { latitude: 35.701, longitude: 51.401 },
+    distanceMeters: 420, straightLineDistanceMeters: 300,
+    nearbyDistanceMeters: 450, nearbyDurationSeconds: 90,
+    routeDistanceMeters: 420, routeDurationSeconds: 310, routeMode: "pedestrian",
+    poiHash: "safe_public_poi_hash", source: "neshan-nearby",
+    fetchedAt: "2026-10-31T00:00:00.000Z",
+  }];
+  await new Listing(value).validate();
+  const unsafe = new Listing({ ...value, nearbyPlaces: [{ ...value.nearbyPlaces[0], phone: "021000" }] });
+  await assert.rejects(() => unsafe.validate(), /StrictModeError|strict mode/i);
 });
 
 function operationalState() {

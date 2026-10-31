@@ -12,12 +12,14 @@
     "score": "node scripts/score-listings.js",
     "reclassify:quality": "node scripts/reclassify-listing-quality.js",
     "backfill:details": "node scripts/backfill-public-details.js",
+    "enrich:neshan": "node scripts/enrich-neshan-places.js",
     "migrate:observations": "node scripts/migrate-observations-to-mongo.js",
     "migrate:operational-state": "node scripts/migrate-operational-state.js",
     "build": "npm run dashboard:build",
     "test": "node --test test/*.test.js"
   },
   "dependencies": {
+    "@neshan-maps-platform/maplibre-sdk": "^6.16.0",
     "dotenv": "^17.4.2",
     "mongoose": "^9.11.4",
     "playwright": "^1.62.1",

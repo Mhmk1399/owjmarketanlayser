@@ -23,7 +23,11 @@ export const config = {
   mongoUri: process.env.MONGODB_URI || null,
   mongoDbName: process.env.MONGODB_DB_NAME || "owj_market_analytics",
   neshanMapKey: process.env.NEXT_PUBLIC_NESHAN_MAP_KEY || null,
-  neshanServiceKey: process.env.NESHAN_SERVICE_KEY || process.env.NEXT_PUBLIC_NESHAN_MAP_KEY || null,
+  // Service keys belong on the server. A public web-map key is intentionally
+  // never reused for Nearby Search or Routing because Neshan scopes key types.
+  neshanServiceKey: process.env.NESHAN_SERVICE_KEY || process.env.NESHAN_API_KEY || null,
+  neshanNearbyRadiusMeters: integer(process.env.NESHAN_NEARBY_RADIUS_METERS, 1_500, 100, 10_000),
+  neshanNearbyResultsPerLayer: integer(process.env.NESHAN_NEARBY_RESULTS_PER_LAYER, 8, 1, 20),
   autoCrawl: bool(process.env.ANALYTICS_AUTO_CRAWL, false),
   crawlIntervalMs: integer(
     process.env.ANALYTICS_CRAWL_INTERVAL_MS,

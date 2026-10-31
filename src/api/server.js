@@ -202,7 +202,12 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
       }
 
       if (request.method === "GET" && url.pathname === "/map-config") {
-        return sendJson(response, 200, { provider: "neshan", key: config.neshanMapKey });
+        return sendJson(response, 200, {
+          provider: "neshan",
+          key: config.neshanMapKey,
+          mapEnabled: Boolean(config.neshanMapKey),
+          nearbyServicesConfigured: Boolean(config.neshanServiceKey),
+        });
       }
 
       if (request.method === "GET" && url.pathname === "/listing-facets") {
@@ -524,12 +529,22 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
         const listing = store.getListing(nearbyMatch[1]);
         if (!listing) return sendJson(response, 404, { error: "listing-not-found" });
         try {
-          const nearbyPlaces = await fetchNearbyPlaces({ latitude: listing.coordinates?.latitude, longitude: listing.coordinates?.longitude, apiKey: config.neshanServiceKey });
+          const nearbyPlaces = await fetchNearbyPlaces({
+            latitude: listing.coordinates?.latitude,
+            longitude: listing.coordinates?.longitude,
+            apiKey: config.neshanServiceKey,
+            radiusMeters: config.neshanNearbyRadiusMeters,
+            resultsPerLayer: config.neshanNearbyResultsPerLayer,
+          });
           const updated = await store.updateNearbyPlaces(listing.token, nearbyPlaces);
           return sendJson(response, 200, { nearbyPlaces, listing: externalListing(updated) });
         } catch (error) {
           logger.warn("http.listing.nearby.failed", "Nearby place lookup failed", { token: listing.token, error: error.message });
-          return sendJson(response, 502, { error: "nearby-place-lookup-failed", message: error.message });
+          const missingKey = error.code === "missing-api-key";
+          return sendJson(response, missingKey ? 503 : 502, {
+            error: missingKey ? "neshan-services-not-configured" : "nearby-place-lookup-failed",
+            message: error.message,
+          });
         }
       }
 
