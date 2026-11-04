@@ -1,10 +1,14 @@
 import mongoose from "mongoose";
+import { randomUUID } from "node:crypto";
 import { Listing } from "../models/listing.js";
 import { ListingObservation } from "../models/listingObservation.js";
 import { CrawlRun, ServiceState } from "../models/crawlState.js";
 import { ScoringScenario } from "../models/scoringScenario.js";
+import { DriftMetric, ListingScore, ModelVersion, TrainingRun } from "../models/scoringState.js";
 import { JsonMarketStore, _jsonHelpers } from "./jsonStore.js";
 import { nextLifecycleStatus } from "../collector/listingPolicy.js";
+import { withMongoRetry } from "./mongoRetry.js";
+import { persistScoringGeneration, promoteModel, rollbackModel } from "../scoring/modelRegistry.js";
 
 function plain(value) {
   return JSON.parse(JSON.stringify(value));
@@ -16,6 +20,9 @@ export class MongoMarketStore extends JsonMarketStore {
     listingModel = Listing, observationModel = ListingObservation,
     serviceStateModel = ServiceState, crawlRunModel = CrawlRun,
     scoringScenarioModel = ScoringScenario,
+    modelVersionModel = ModelVersion, trainingRunModel = TrainingRun,
+    listingScoreModel = ListingScore, driftMetricModel = DriftMetric,
+    mongoRetry = {},
   } = {}) {
     super(paths, logger, { snapshotEvery });
     this.mongoUri = mongoUri;
@@ -25,21 +32,40 @@ export class MongoMarketStore extends JsonMarketStore {
     this.serviceStateModel = serviceStateModel;
     this.crawlRunModel = crawlRunModel;
     this.scoringScenarioModel = scoringScenarioModel;
+    this.modelVersionModel = modelVersionModel;
+    this.trainingRunModel = trainingRunModel;
+    this.listingScoreModel = listingScoreModel;
+    this.driftMetricModel = driftMetricModel;
+    this.mongoRetry = mongoRetry;
     this.mongo = null;
+  }
+
+  async mongoOperation(label, operation) {
+    return withMongoRetry(operation, {
+      ...this.mongoRetry,
+      onRetry: ({ attempt, nextAttempt, delayMs, error }) => {
+        this.logger.warn("store.mongo.retry", "Transient MongoDB operation failed; retrying", {
+          operation: label, attempt, nextAttempt, delayMs,
+          error: error.message,
+        });
+      },
+    });
   }
 
   async init() {
     if (!this.mongoUri) throw new Error("MongoMarketStore requires MONGODB_URI");
-    this.mongo = await mongoose.connect(this.mongoUri, {
+    this.mongo = await this.mongoOperation("connect", () => mongoose.connect(this.mongoUri, {
       dbName: this.mongoDbName,
       serverSelectionTimeoutMS: 30_000,
       maxPoolSize: 20,
       minPoolSize: 2,
-    });
+    }));
     await Promise.all([
       this.listingModel.init(), this.observationModel.init(),
       this.serviceStateModel.init(), this.crawlRunModel.init(),
       this.scoringScenarioModel.init(),
+      this.modelVersionModel.init(), this.trainingRunModel.init(),
+      this.listingScoreModel.init(), this.driftMetricModel.init(),
     ]);
     const documents = await this.listingModel.find({}).lean();
     this.listings.clear();
@@ -47,11 +73,41 @@ export class MongoMarketStore extends JsonMarketStore {
       const listing = plain(document);
       this.listings.set(listing.token, listing);
     }
+    await this.reconcileInterruptedRun();
     this.logger.info("store.mongo.ready", "MongoDB is the authoritative listing store", {
       listingCount: this.listings.size,
       database: mongoose.connection.name,
       jsonRole: "derived-compatibility-snapshot",
     });
+  }
+
+  async reconcileInterruptedRun() {
+    const document = await this.serviceStateModel.findOne({ key: "crawler" }).lean();
+    if (!document || !["starting", "discovering", "processing"].includes(document.crawl?.status)) return null;
+    const now = new Date().toISOString();
+    const { _id, key, ...stored } = plain(document);
+    const state = {
+      ...stored,
+      updatedAt: now,
+      crawl: {
+        ...stored.crawl,
+        status: "failed",
+        endedAt: now,
+        error: "service-restarted-before-run-completed",
+        completeness: {
+          ...(stored.crawl.completeness || {}),
+          status: "failed",
+          stopRequested: true,
+        },
+      },
+    };
+    await this.saveServiceState(state);
+    this.logger.warn("store.mongo.interrupted-run", "Recovered a stale in-progress crawl as failed", {
+      runId: state.crawl.runId,
+      previousStatus: document.crawl.status,
+      endedAt: now,
+    });
+    return state;
   }
 
   async queryListings({ offset = 0, limit = 50, district, area, category, advertiserType, query, readiness, status, minPrice, maxPrice, minPricePerMeter, maxPricePerMeter, minArea, maxArea, minRooms, minYear, amenities = [] } = {}) {
@@ -86,19 +142,19 @@ export class MongoMarketStore extends JsonMarketStore {
     range("property.constructionYear", minYear, undefined);
     for (const amenity of amenities) filters.push({ [`amenities.${amenity}`]: true });
     const filter = filters.length ? { $and: filters } : {};
-    const [total, documents] = await Promise.all([
+    const [total, documents] = await this.mongoOperation("listings.query", () => Promise.all([
       this.listingModel.countDocuments(filter),
       this.listingModel.find(filter).sort({ lastSeenAt: -1, token: 1 }).skip(offset).limit(limit).lean(),
-    ]);
+    ]));
     return { total, listings: documents.map(({ _id, ...document }) => plain(document)) };
   }
 
   async listingFacets() {
-    const [districts, categories, bounds] = await Promise.all([
+    const [districts, categories, bounds] = await this.mongoOperation("listings.facets", () => Promise.all([
       this.listingModel.distinct("neighborhood", { neighborhood: { $nin: [null, ""] } }),
       this.listingModel.distinct("subcategory", { subcategory: { $nin: [null, ""] } }),
       this.listingModel.aggregate([{ $group: { _id: null, minPrice: { $min: "$pricing.price" }, maxPrice: { $max: "$pricing.price" }, minArea: { $min: "$property.area" }, maxArea: { $max: "$property.area" } } }]),
-    ]);
+    ]));
     return { districts: districts.sort(), categories: categories.sort(), bounds: bounds[0] || {} };
   }
 
@@ -106,7 +162,8 @@ export class MongoMarketStore extends JsonMarketStore {
     const existing = this.listings.get(token);
     if (!existing) return null;
     const merged = { ...existing, nearbyPlaces };
-    await this.listingModel.replaceOne({ token }, merged, { upsert: false, runValidators: true });
+    await this.mongoOperation("listing.nearby.update", () =>
+      this.listingModel.replaceOne({ token }, merged, { upsert: false, runValidators: true }));
     this.listings.set(token, merged);
     return merged;
   }
@@ -140,16 +197,22 @@ export class MongoMarketStore extends JsonMarketStore {
         { token: merged.token }, merged,
         { upsert: true, runValidators: true, ...(session ? { session } : {}) },
       );
-      if (observation) {
-        if (session) await this.observationModel.create([observation], { session });
-        else await this.observationModel.create(observation);
-      }
+      if (observation) await this.observationModel.updateOne(
+        {
+          token: observation.token,
+          observedAt: observation.observedAt,
+          contentFingerprint: observation.contentFingerprint,
+          eventType: observation.eventType,
+        },
+        { $setOnInsert: observation },
+        { upsert: true, runValidators: true, ...(session ? { session } : {}) },
+      );
     };
-    if (this.mongo?.connection?.transaction) {
-      await this.mongo.connection.transaction((session) => persist(session));
-    } else {
-      await persist();
-    }
+    await this.mongoOperation("listing.upsert", async () => {
+      if (this.mongo?.connection?.transaction) {
+        await this.mongo.connection.transaction((session) => persist(session));
+      } else await persist();
+    });
     this.listings.set(merged.token, plain(merged));
     return { listing: plain(merged), changed, existed: Boolean(existing) };
   }
@@ -216,7 +279,10 @@ export class MongoMarketStore extends JsonMarketStore {
   }
 
   async readServiceState() {
-    const document = await this.serviceStateModel.findOne({ key: "crawler" }).lean();
+    const document = await this.mongoOperation(
+      "service-state.read",
+      () => this.serviceStateModel.findOne({ key: "crawler" }).lean(),
+    );
     if (!document) return null;
     const { _id, key, ...state } = plain(document);
     return state;
@@ -237,11 +303,11 @@ export class MongoMarketStore extends JsonMarketStore {
       await this.serviceStateModel.replaceOne({ key: "crawler" }, serviceState, options);
       if (run) await this.crawlRunModel.replaceOne({ runId: run.runId }, run, options);
     };
-    if (this.mongo?.connection?.transaction) {
-      await this.mongo.connection.transaction((session) => persist(session));
-    } else {
-      await persist();
-    }
+    await this.mongoOperation("service-state.save", async () => {
+      if (this.mongo?.connection?.transaction) {
+        await this.mongo.connection.transaction((session) => persist(session));
+      } else await persist();
+    });
   }
 
   async queryCrawlRuns({ limit = 20 } = {}) {
@@ -249,8 +315,122 @@ export class MongoMarketStore extends JsonMarketStore {
     return documents.map(({ _id, ...document }) => plain(document));
   }
 
+  async readModelState() {
+    const active = await this.mongoOperation(
+      "online-model.read",
+      () => this.modelVersionModel.findOne({ kind: "online-ridge", status: "active" }).lean(),
+    );
+    return active?.artifact || super.readModelState();
+  }
+
+  async saveModelState(value) {
+    const version = value.locationModelVersion || "online-ridge-unknown";
+    await this.mongoOperation("online-model.save", async () => {
+      const active = await this.modelVersionModel.findOne({ kind: "online-ridge", status: "active" }).lean();
+      if (active?.version === version) {
+        await this.modelVersionModel.updateOne(
+          { modelId: active.modelId },
+          { $set: {
+            generatedAt: value.updatedAt || new Date(),
+            dataset: { count: value.models?.["global:sale"]?.count || 0 },
+            metrics: { modelCount: Object.keys(value.models || {}).length },
+            artifact: value,
+          } },
+          { runValidators: true },
+        );
+      } else {
+        await mongoose.connection.transaction(async (session) => {
+          if (active) await this.modelVersionModel.updateOne(
+            { modelId: active.modelId },
+            { $set: { status: "archived", archivedAt: new Date() } },
+            { session },
+          );
+          await this.modelVersionModel.create([{
+            modelId: `online-${version}-${Date.now()}`,
+            kind: "online-ridge",
+            version,
+            status: "active",
+            generatedAt: value.updatedAt || new Date(),
+            promotedAt: new Date(),
+            archivedAt: null,
+            parentModelId: active?.modelId || null,
+            trainingRunId: null,
+            dataset: { count: value.models?.["global:sale"]?.count || 0 },
+            metrics: { modelCount: Object.keys(value.models || {}).length },
+            artifact: value,
+          }], { session });
+        });
+      }
+    });
+    // JSON remains a compatibility snapshot, never the authoritative model.
+    await super.saveModelState(value);
+  }
+
+  async persistScoringGeneration(documents) {
+    const runId = randomUUID();
+    const modelId = randomUUID();
+    return this.mongoOperation("scoring-generation.publish", () => persistScoringGeneration(documents, {
+      connection: this.mongo?.connection || mongoose.connection,
+      modelVersionModel: this.modelVersionModel,
+      trainingRunModel: this.trainingRunModel,
+      listingScoreModel: this.listingScoreModel,
+      driftMetricModel: this.driftMetricModel,
+      runId,
+      modelId,
+    }));
+  }
+
+  async latestScoredListings({ limit = 0 } = {}) {
+    const active = await this.mongoOperation("scores.active-model", () =>
+      this.modelVersionModel.findOne({ kind: "batch-price", status: "active" }).lean());
+    if (!active) return { model: null, listings: [] };
+    const scores = await this.mongoOperation("scores.latest", () => {
+      let query = this.listingScoreModel.find({ modelId: active.modelId }).sort({ rank: 1 }).lean();
+      if (limit > 0) query = query.limit(limit);
+      return query;
+    });
+    return { model: plain(active), listings: scores.map((item) => plain(item.snapshot)) };
+  }
+
+  async listingScoreHistory(token, { limit = 50 } = {}) {
+    return this.mongoOperation("scores.history", () =>
+      this.listingScoreModel.find({ token }).sort({ generatedAt: -1 }).limit(limit).lean());
+  }
+
+  async queryModelVersions({ kind, limit = 50 } = {}) {
+    return this.mongoOperation("models.query", () =>
+      this.modelVersionModel.find(kind ? { kind } : {}).sort({ generatedAt: -1 }).limit(limit).lean());
+  }
+
+  async queryTrainingRuns({ limit = 50 } = {}) {
+    return this.mongoOperation("training-runs.query", () =>
+      this.trainingRunModel.find({}).sort({ startedAt: -1 }).limit(limit).lean());
+  }
+
+  async queryDriftMetrics({ limit = 50 } = {}) {
+    return this.mongoOperation("drift.query", () =>
+      this.driftMetricModel.find({}).sort({ evaluatedAt: -1 }).limit(limit).lean());
+  }
+
+  async promoteModel(modelId) {
+    return this.mongoOperation("models.promote", () => promoteModel(modelId, {
+      connection: this.mongo?.connection || mongoose.connection,
+      modelVersionModel: this.modelVersionModel,
+    }));
+  }
+
+  async rollbackModel(kind) {
+    return this.mongoOperation("models.rollback", () => rollbackModel(kind, {
+      connection: this.mongo?.connection || mongoose.connection,
+      modelVersionModel: this.modelVersionModel,
+    }));
+  }
+
   async flush() {
-    const documents = (await this.listingModel.find({}).sort({ token: 1 }).lean())
+    const documents = (await this.mongoOperation(
+      "listing.snapshot",
+      () => this.listingModel.find({}).sort({ token: 1 }).lean(),
+    ))
       .map(({ _id, ...document }) => plain(document));
     this.listings.clear();
     for (const listing of documents) this.listings.set(listing.token, listing);

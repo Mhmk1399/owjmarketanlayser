@@ -160,7 +160,23 @@ function externalListing(listing) {
 
 export function createAnalyticsServer({ config, store, analytics, crawler, logger }) {
   let recommendationAnalysisCache = { key: null, value: new Map() };
-  const readScoredDocument = createCachedJsonReader(config.paths.scoredListings, null);
+  const readScoredSnapshot = createCachedJsonReader(config.paths.scoredListings, null);
+  const readScoredDocument = async () => {
+    if (typeof store.latestScoredListings === "function") {
+      const latest = await store.latestScoredListings();
+      if (latest.listings.length) return {
+        schemaVersion: "1.0.0",
+        scoringVersion: latest.model.version,
+        generatedAt: latest.model.generatedAt,
+        modelValidation: latest.model.metrics?.modelValidation || {},
+        summary: latest.model.metrics?.scoring || {},
+        valuationValidation: latest.model.metrics?.scoring?.valuationValidation || {},
+        listings: latest.listings,
+        source: { type: "mongodb", modelId: latest.model.modelId },
+      };
+    }
+    return readScoredSnapshot();
+  };
   const server = http.createServer(async (request, response) => {
     const startedAt = Date.now();
     const requestId = randomUUID();
@@ -350,6 +366,50 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
         const document = await readScoredDocument();
         if (!document?.listings) return sendJson(response, 404, { error: "scores-not-generated" });
         return sendJson(response, 200, buildScoringWorkshop(document));
+      }
+
+      if (request.method === "GET" && url.pathname === "/model-versions") {
+        if (typeof store.queryModelVersions !== "function") return sendJson(response, 503, { error: "mongodb-required" });
+        const kind = url.searchParams.get("kind") || undefined;
+        const limit = numberParam(url.searchParams.get("limit"), 50, 1, 500);
+        return sendJson(response, 200, { models: await store.queryModelVersions({ kind, limit }) });
+      }
+
+      if (request.method === "GET" && url.pathname === "/training-runs") {
+        if (typeof store.queryTrainingRuns !== "function") return sendJson(response, 503, { error: "mongodb-required" });
+        const limit = numberParam(url.searchParams.get("limit"), 50, 1, 500);
+        return sendJson(response, 200, { runs: await store.queryTrainingRuns({ limit }) });
+      }
+
+      if (request.method === "GET" && url.pathname === "/model-drift") {
+        if (typeof store.queryDriftMetrics !== "function") return sendJson(response, 503, { error: "mongodb-required" });
+        const limit = numberParam(url.searchParams.get("limit"), 50, 1, 500);
+        return sendJson(response, 200, { metrics: await store.queryDriftMetrics({ limit }) });
+      }
+
+      const modelPromotionMatch = url.pathname.match(/^\/model-versions\/([A-Za-z0-9_-]+)\/promote$/);
+      if (request.method === "POST" && modelPromotionMatch) {
+        if (typeof store.promoteModel !== "function") return sendJson(response, 503, { error: "mongodb-required" });
+        return sendJson(response, 200, { model: await store.promoteModel(modelPromotionMatch[1]) });
+      }
+
+      if (request.method === "POST" && url.pathname === "/model-versions/rollback") {
+        if (typeof store.rollbackModel !== "function") return sendJson(response, 503, { error: "mongodb-required" });
+        const body = await readJsonBody(request);
+        if (!['batch-price', 'online-ridge'].includes(body.kind)) {
+          throw Object.assign(new Error("kind must be batch-price or online-ridge"), { status: 400 });
+        }
+        return sendJson(response, 200, { model: await store.rollbackModel(body.kind) });
+      }
+
+      const scoreHistoryMatch = url.pathname.match(/^\/listings\/([A-Za-z0-9_-]+)\/score-history$/);
+      if (request.method === "GET" && scoreHistoryMatch) {
+        if (typeof store.listingScoreHistory !== "function") return sendJson(response, 503, { error: "mongodb-required" });
+        const limit = numberParam(url.searchParams.get("limit"), 50, 1, 500);
+        return sendJson(response, 200, {
+          token: scoreHistoryMatch[1],
+          scores: await store.listingScoreHistory(scoreHistoryMatch[1], { limit }),
+        });
       }
 
       if (request.method === "GET" && url.pathname === "/scoring-scenarios") {

@@ -4,6 +4,21 @@ export function rotate(items, offset = 0) {
   return [...items.slice(start), ...items.slice(0, start)];
 }
 
+export function requestAwareListingBudget({
+  maxListings,
+  maxRequestsPerRun,
+  areaCount,
+  searchRequestsPerArea = 6,
+  detailRequestsPerListing = 2,
+} = {}) {
+  const configured = Math.max(0, Math.floor(maxListings || 0));
+  const requestLimit = Math.max(0, Math.floor(maxRequestsPerRun || 0));
+  const areas = Math.max(0, Math.floor(areaCount || 0));
+  const searchReserve = areas * Math.max(1, Math.floor(searchRequestsPerArea));
+  const available = Math.max(0, requestLimit - searchReserve);
+  return Math.min(configured, Math.floor(available / Math.max(1, detailRequestsPerListing)));
+}
+
 export function planAdaptivePartitions(partitions, listings, {
   totalBudget,
   maxAreas = 0,

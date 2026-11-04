@@ -5,6 +5,7 @@ import {
 } from "./divarPost.js";
 import { resolveListingLocation } from "../locations/hierarchy.js";
 import { classifyListingQuality } from "./listingPolicy.js";
+import { classifyAdvertiser } from "./advertiserClassifier.js";
 
 const PHONE_LIKE = /(?<!\d)(?:(?:\+98|0098|0)[\d -]{9,16}\d)(?!\d)/g;
 const EMAIL_LIKE = /[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/g;
@@ -104,10 +105,25 @@ function safeImage(image, index) {
     const height = Number(source.height);
     const pathname = url.pathname.toLowerCase();
     const format = pathname.match(/\.([a-z0-9]{2,5})$/)?.[1] || null;
+    const thumbnail = (() => {
+      try {
+        const value = new URL(source.thumbnailUrl);
+        if (!["http:", "https:"].includes(value.protocol) || value.username || value.password) return null;
+        value.search = "";
+        value.hash = "";
+        return value.toString();
+      } catch { return null; }
+    })();
+    const aspectWidth = Number(source.aspectRatio?.width);
+    const aspectHeight = Number(source.aspectRatio?.height);
     return {
       url: url.toString(),
+      thumbnailUrl: thumbnail,
       width: Number.isInteger(width) && width > 0 ? width : null,
       height: Number.isInteger(height) && height > 0 ? height : null,
+      aspectRatio: Number.isInteger(aspectWidth) && aspectWidth > 0
+        && Number.isInteger(aspectHeight) && aspectHeight > 0
+        ? { width: aspectWidth, height: aspectHeight } : null,
       alt: safeText(source.alt, 300),
       format,
       isPrimary: index === 0,
@@ -128,6 +144,10 @@ function allowlistedAttributes(raw) {
 
 function normalizePublicRaw(raw) {
   const floorNumbers = latinDigits(attribute(raw, /^طبقه$/)).match(/\d+/g)?.map(Number) || [];
+  const classifiedAdvertiser = classifyAdvertiser(
+    raw.advertiserSignals || { type: null, isBusiness: null, hasBusinessBadge: null },
+    raw.description,
+  );
   const normalized = {
     token: raw.token, url: raw.url, title: raw.title, category: raw.category || "real-estate",
     subcategory: raw.subcategory, city: raw.city, district: raw.district,
@@ -161,7 +181,13 @@ function normalizePublicRaw(raw) {
     },
     amenities: Object.fromEntries(AMENITY_ALLOWLIST.map((key) => [key,
       typeof raw.amenities?.[key] === "boolean" ? raw.amenities[key] : null])),
-    advertiser: raw.advertiserSignals || { type: null, isBusiness: null, hasBusinessBadge: null },
+    advertiser: {
+      ...(raw.advertiserSignals || {}),
+      type: classifiedAdvertiser.type,
+      isBusiness: classifiedAdvertiser.isBusiness,
+      confidence: classifiedAdvertiser.confidence,
+      classificationSource: classifiedAdvertiser.classificationSource,
+    },
     media: {
       samePropertyImageClaim: nullableBoolean(raw.mediaSignals?.samePropertyImageClaim),
       claimSource: raw.mediaSignals?.claimSource === "poster-declared-public-field"
@@ -234,15 +260,6 @@ function finite(value) {
 
 function nullableBoolean(value) {
   return typeof value === "boolean" ? value : null;
-}
-
-function advertiserClassification(advertiser = {}) {
-  const value = String(advertiser.type || "").toLowerCase();
-  if (advertiser.isBusiness === true || /real-estate-business|business|agency|dealer|professional|املاک|مشاور|بنگاه/.test(value)) {
-    return "real-estate-business";
-  }
-  if (advertiser.isBusiness === false || /personal|private|individual|شخصی|مالک/.test(value)) return "personal";
-  return "unknown";
 }
 
 function safePanelType(value) {
@@ -327,6 +344,7 @@ export function toPublicMarketListing(
     ? Math.round(price / area)
     : null;
   const pricePerMeter = derivedPricePerMeter ?? advertisedPricePerMeter;
+  const advertiser = classifyAdvertiser(normalized.advertiser, normalized.description);
 
   const listing = {
     schemaVersion: "2.0.0",
@@ -391,19 +409,16 @@ export function toPublicMarketListing(
       isNegotiable: nullableBoolean(normalized.pricing?.isNegotiable),
     },
     amenities: Object.fromEntries(AMENITY_ALLOWLIST.map((key) => [key, nullableBoolean(normalized.amenities?.[key])])),
-    advertiserType: advertiserClassification(normalized.advertiser),
+    advertiserType: advertiser.type,
     advertiserSignals: {
-      type: advertiserClassification(normalized.advertiser),
-      isBusiness: nullableBoolean(normalized.advertiser?.isBusiness),
+      type: advertiser.type,
+      isBusiness: advertiser.isBusiness,
       hasBusinessBadge: nullableBoolean(normalized.advertiser?.hasBusinessBadge),
       panelType: safePanelType(normalized.advertiser?.panelType),
       hasBusinessReference: nullableBoolean(normalized.advertiser?.hasBusinessReference),
-      classificationSource: Array.isArray(normalized.advertiser?.classificationSource)
-        ? normalized.advertiser.classificationSource.map((value) => safeText(value, 100)).filter(Boolean)
-        : [],
-      confidence: ["high", "medium", "low"].includes(normalized.advertiser?.confidence)
-        ? normalized.advertiser.confidence : "low",
-      businessDisplayName: advertiserClassification(normalized.advertiser) === "real-estate-business"
+      classificationSource: advertiser.classificationSource.map((value) => safeText(value, 100)).filter(Boolean),
+      confidence: advertiser.confidence,
+      businessDisplayName: advertiser.type === "real-estate-business"
         ? safeText(normalized.advertiser?.businessDisplayName, 300) : null,
     },
     media: {

@@ -22,7 +22,10 @@ const amenityFields = ["elevator", "parking", "storage", "balcony", "rooftop", "
 const amenitiesSchema = new Schema(Object.fromEntries(amenityFields.map((key) => [key, nullable(Boolean)])), strict);
 const imageSchema = new Schema({
   url: { type: String, required: true, match: /^https?:\/\// }, width: nullable(Number, { min: 1 }),
-  height: nullable(Number, { min: 1 }), alt: nullable(String), format: nullable(String), isPrimary: { type: Boolean, required: true },
+  thumbnailUrl: nullable(String, { match: /^https?:\/\// }),
+  height: nullable(Number, { min: 1 }),
+  aspectRatio: { type: new Schema({ width: { type: Number, required: true, min: 1 }, height: { type: Number, required: true, min: 1 } }, strict), default: null },
+  alt: nullable(String), format: nullable(String), isPrimary: { type: Boolean, required: true },
 }, strict);
 const crawlAreaSchema = new Schema({ id: nullable(Number), name: nullable(String), slug: nullable(String), municipalDistricts: { type: [Number], default: [] } }, strict);
 const crawlPartitionSchema = new Schema({ category: nullable(String), expectedSubcategory: nullable(String), area: { type: crawlAreaSchema, default: null } }, strict);

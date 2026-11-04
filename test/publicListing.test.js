@@ -46,7 +46,7 @@ test("public projection removes contact and identity fields and derives price pe
   assert.match(listing.description, /\[redacted-phone\]/);
   assert.equal(Object.hasOwn(listing, "advertiser"), false);
   assert.equal(listing.advertiserType, "personal");
-  assert.equal(listing.advertiserSignals.isBusiness, null);
+  assert.equal(listing.advertiserSignals.isBusiness, false);
   assert.deepEqual(listing.crawlPartition, {
     category: null,
     expectedSubcategory: null,
@@ -76,11 +76,26 @@ test("content fingerprint records publication, image, advertiser and quality cha
 test("advertiser classification separates personal files from real-estate businesses", () => {
   const personal = toPublicMarketListing(normalizedFixture({ advertiser: { type: "شخصی", isBusiness: false } }));
   const business = toPublicMarketListing(normalizedFixture({ advertiser: { type: "مشاور املاک", isBusiness: true } }));
-  const unknown = toPublicMarketListing(normalizedFixture({ advertiser: {} }));
+  const fallbackPersonal = toPublicMarketListing(normalizedFixture({ advertiser: {} }));
   assert.equal(personal.advertiserType, "personal");
   assert.equal(business.advertiserType, "real-estate-business");
-  assert.equal(unknown.advertiserType, "unknown");
+  assert.equal(fallbackPersonal.advertiserType, "personal");
   assert.doesNotMatch(JSON.stringify(business), /advertiserName|agencyName|09121234567/i);
+});
+
+test("description classification reaches the stored table field with negation protection", () => {
+  const agency = toPublicMarketListing(normalizedFixture({
+    description: "مشاور شما برای اطلاعات و بازدید؛ کد فایل ۴۲",
+    advertiser: { type: "personal", isBusiness: false, classificationSource: ["public-business-type"] },
+  }));
+  const owner = toPublicMarketListing(normalizedFixture({
+    description: "فروش مستقیم از مالک؛ املاک تماس نگیرد",
+    advertiser: {},
+  }));
+  assert.equal(agency.advertiserType, "real-estate-business");
+  assert.equal(agency.advertiserSignals.confidence, "medium");
+  assert.equal(owner.advertiserType, "personal");
+  assert.equal(owner.advertiserSignals.classificationSource.includes("description-business-negation"), true);
 });
 
 test("public business metadata and poster image claim survive the strict projection", async () => {
@@ -137,6 +152,21 @@ test("partition guard accepts a source slug alias and returns typed mismatch rea
     "subcategory-mismatch");
   assert.equal(validateListingPartition({ subcategory: "buy-residential-apartment", neighborhood: "دروس" }, discovered).reason,
     "neighborhood-mismatch");
+});
+
+test("partition guard accepts only curated neighborhood containment relationships", () => {
+  const base = {
+    subcategory: "buy-residential-apartment",
+    sourceNeighborhoodSlug: null,
+  };
+  assert.deepEqual(validateListingPartition(
+    { ...base, neighborhood: "لویزان" },
+    { expectedSubcategory: "buy-residential-apartment", area: { name: "بوستان جنگلی لویزان", slug: "bustan-jangali-lavizan" } },
+  ), { matches: true, reason: "approved-neighborhood-relation" });
+  assert.equal(validateListingPartition(
+    { ...base, neighborhood: "سعادت‌آباد" },
+    { expectedSubcategory: "buy-residential-apartment", area: { name: "سبلان قدیمی", slug: "sabalan" } },
+  ).matches, false);
 });
 
 test("runtime schema guard rejects contact-bearing records", () => {

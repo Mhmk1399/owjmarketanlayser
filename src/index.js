@@ -22,6 +22,7 @@ const store = new Store(config.paths, logger, {
   snapshotEvery: config.jsonSnapshotEvery,
   mongoUri: config.mongoUri,
   mongoDbName: config.mongoDbName,
+  mongoRetry: config.mongoRetry,
 });
 await store.init();
 
@@ -50,7 +51,6 @@ async function shutdown(signal) {
   shuttingDown = true;
   if (crawlTimer) clearTimeout(crawlTimer);
   logger.warn("service.shutdown", "Analytics service shutdown requested", { signal });
-  server.close();
   await crawler.stop().catch((error) => {
     logger.error("service.shutdown.crawler", "Crawler shutdown failed", { error: error.message });
   });
@@ -58,6 +58,7 @@ async function shutdown(signal) {
   if (typeof store.close === "function") await store.close();
   else await store.flush();
   await logger.flush();
+  await new Promise((resolve) => server.close(resolve));
 }
 
 process.once("SIGINT", () => void shutdown("SIGINT"));
@@ -77,13 +78,23 @@ server.listen(config.port, config.host, () => {
       if (shuttingDown) return;
       const result = crawler.start();
       logger.info("service.auto-crawl", "Completion-based automatic crawl requested", result);
-      await crawler.waitForCompletion();
+      const state = await crawler.waitForCompletion();
       if (shuttingDown) return;
+      const completed = state.status === "completed" && state.completeness?.status === "complete";
+      const cooldownDelay = state.cooldownUntil
+        ? Math.max(0, Date.parse(state.cooldownUntil) - Date.now())
+        : 0;
+      const delayMs = completed
+        ? config.crawlIntervalMs
+        : Math.max(config.crawlFailureRetryMs, cooldownDelay);
       logger.info("service.auto-crawl.scheduled", "Next crawl scheduled after completed run", {
-        intervalMs: config.crawlIntervalMs,
-        nextRunAt: new Date(Date.now() + config.crawlIntervalMs).toISOString(),
+        previousStatus: state.status,
+        previousCompleteness: state.completeness?.status ?? null,
+        scheduleReason: completed ? "normal-interval" : "recovery-retry",
+        intervalMs: delayMs,
+        nextRunAt: new Date(Date.now() + delayMs).toISOString(),
       });
-      crawlTimer = setTimeout(() => void runAutomaticCrawl(), config.crawlIntervalMs);
+      crawlTimer = setTimeout(() => void runAutomaticCrawl(), delayMs);
     };
     void runAutomaticCrawl();
   }

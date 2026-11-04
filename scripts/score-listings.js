@@ -4,6 +4,9 @@ import { once } from "node:events";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runScoringPipeline } from "../src/scoring/pipeline.js";
+import mongoose from "mongoose";
+import { config } from "../src/config.js";
+import { persistScoringGeneration } from "../src/scoring/modelRegistry.js";
 
 const serviceRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const logFile = path.join(serviceRoot, "logs", "scoring.jsonl");
@@ -18,8 +21,10 @@ function log(event) {
 }
 
 try {
+  if (config.mongoUri) await mongoose.connect(config.mongoUri, { dbName: config.mongoDbName });
   const result = await runScoringPipeline({}, {
     onEvent: log,
+    onPersist: config.mongoUri ? (documents) => persistScoringGeneration(documents) : undefined,
     onComplete: ({ report, topListings }) => log({
       timestamp: new Date().toISOString(),
       type: "pipeline.result",
@@ -40,6 +45,7 @@ try {
   process.stderr.write(`${error.stack || error.message}\n`);
   process.exitCode = 1;
 } finally {
+  if (config.mongoUri) await mongoose.disconnect();
   logStream.end();
   await once(logStream, "close");
 }

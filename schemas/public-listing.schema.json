@@ -55,11 +55,21 @@
       "type": "array",
       "items": {
         "type": "object", "additionalProperties": false,
-        "required": ["url", "width", "height", "alt", "format", "isPrimary"],
+        "required": ["url", "thumbnailUrl", "width", "height", "aspectRatio", "alt", "format", "isPrimary"],
         "properties": {
           "url": { "type": "string", "format": "uri", "pattern": "^https?://" },
+          "thumbnailUrl": { "type": ["string", "null"], "format": "uri", "pattern": "^https?://" },
           "width": { "type": ["integer", "null"], "minimum": 1 },
           "height": { "type": ["integer", "null"], "minimum": 1 },
+          "aspectRatio": {
+            "type": ["object", "null"],
+            "additionalProperties": false,
+            "required": ["width", "height"],
+            "properties": {
+              "width": { "type": "integer", "minimum": 1 },
+              "height": { "type": "integer", "minimum": 1 }
+            }
+          },
           "alt": { "type": ["string", "null"] }, "format": { "type": ["string", "null"] },
           "isPrimary": { "type": "boolean" }
         }

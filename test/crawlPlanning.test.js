@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { planAdaptivePartitions, RequestBudget, rotate } from "../src/collector/crawlPlanning.js";
+import { planAdaptivePartitions, requestAwareListingBudget, RequestBudget, rotate } from "../src/collector/crawlPlanning.js";
 
 const partitions = [1, 2, 3].map((id) => ({ area: { id }, limit: 5 }));
 
@@ -28,6 +28,19 @@ test("a full-area plan rotates instead of wrapping to the first area", () => {
   assert.equal(plan.nextOffset, 1);
   const next = planAdaptivePartitions(partitions, [], { totalBudget: 6, offset: plan.nextOffset });
   assert.equal(next.partitions[0].area.id, 2);
+});
+
+test("request-aware planning reserves search and two detail requests for every listing", () => {
+  assert.equal(requestAwareListingBudget({
+    maxListings: 10_000,
+    maxRequestsPerRun: 15_000,
+    areaCount: 168,
+  }), 6_996);
+  assert.equal(requestAwareListingBudget({
+    maxListings: 2_000,
+    maxRequestsPerRun: 15_000,
+    areaCount: 168,
+  }), 2_000);
 });
 
 test("request budget accounts by kind and enforces run and minute ceilings", () => {

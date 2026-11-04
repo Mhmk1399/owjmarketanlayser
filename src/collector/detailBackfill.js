@@ -2,7 +2,10 @@ import { _publicListingHelpers, validatePublicMarketListing } from "./publicList
 
 export function needsPublicDetailBackfill(listing) {
   return !String(listing?.description || "").trim()
-    || !["personal", "real-estate-business"].includes(listing?.advertiserType);
+    || !["personal", "real-estate-business"].includes(listing?.advertiserType)
+    || (listing?.advertiserType === "real-estate-business"
+      && !String(listing?.advertiserSignals?.businessDisplayName || "").trim())
+    || (listing?.images || []).some((image) => !("thumbnailUrl" in image) || !("aspectRatio" in image));
 }
 
 export function mergeBackfilledPublicDetails(existing, extracted) {

@@ -17,8 +17,9 @@ import {
 } from "./tehranAreas.js";
 import { withRetry } from "./retry.js";
 import { refreshDecision } from "./listingPolicy.js";
-import { planAdaptivePartitions, RequestBudget } from "./crawlPlanning.js";
+import { planAdaptivePartitions, requestAwareListingBudget, RequestBudget } from "./crawlPlanning.js";
 import { cleanupOldDebugArtifacts } from "../storage/retention.js";
+import { approvedNeighborhoodRelation } from "../locations/neighborhoodRelations.js";
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -57,6 +58,9 @@ export function validateListingPartition(listing, discovered) {
     .filter(Boolean).map(normalizePersianText);
   const name = normalizePersianText(listing?.neighborhood);
   if (expectedNames.length && expectedNames.includes(name)) return { matches: true, reason: "exact-or-alias-name" };
+  if (expectedNames.some((expected) => approvedNeighborhoodRelation(expected, name))) {
+    return { matches: true, reason: "approved-neighborhood-relation" };
+  }
   const slug = String(listing?.sourceNeighborhoodSlug || "").toLowerCase();
   const expectedSlugs = [discovered?.area?.slug, ...(discovered?.area?.secondSlugs || [])]
     .filter(Boolean).map((value) => String(value).toLowerCase());
@@ -113,7 +117,19 @@ export class PublicCrawler {
   }
 
   snapshot() {
-    return { ...this.state };
+    const requestBudget = this.requestBudget?.snapshot() || this.state.requestBudget || {};
+    const running = ["starting", "discovering", "processing"].includes(this.state.status);
+    const completeness = running ? {
+      ...(this.state.completeness || {}),
+      status: "running",
+      areaCoverage: this.state.areasTotal
+        ? Number((this.state.areasCompleted / this.state.areasTotal * 100).toFixed(2)) : 0,
+      detailCoverage: this.state.queued
+        ? Number((this.state.successful / this.state.queued * 100).toFixed(2)) : 0,
+      failedDetails: this.state.failed,
+      stopRequested: this.stopRequested,
+    } : this.state.completeness;
+    return { ...this.state, requestBudget, completeness };
   }
 
   async persistState() {
@@ -135,7 +151,22 @@ export class PublicCrawler {
     }
     this.stopRequested = false;
     this.currentPromise = this.run()
-      .catch((error) => {
+      .catch(async (error) => {
+        this.state.status = "failed";
+        this.state.endedAt = new Date().toISOString();
+        this.state.error = error.message;
+        this.state.completeness = {
+          ...(this.state.completeness || {}),
+          status: "failed",
+          failedDetails: this.state.failed || 0,
+          stopRequested: this.stopRequested,
+        };
+        await this.persistState().catch((persistError) => {
+          this.logger.error("crawl.failure-state.persist", "Could not persist failed crawl state", {
+            runId: this.state.runId,
+            error: persistError.message,
+          });
+        });
         this.logger.error("crawl.unhandled", "Crawl failed", { error: error.stack || error.message });
       })
       .finally(() => {
@@ -309,8 +340,16 @@ export class PublicCrawler {
       listingsPerArea: this.config.crawl.listingsPerArea,
       focusAreas: TEHRAN_FOCUS_AREAS,
     });
+    const selectedAreaCount = this.config.crawl.maxAreas > 0
+      ? Math.min(basePartitions.length, this.config.crawl.maxAreas)
+      : basePartitions.length;
+    const requestAwareBudget = requestAwareListingBudget({
+      maxListings: Math.min(this.config.crawl.maxListings, basePartitions.length * this.config.crawl.listingsPerArea),
+      maxRequestsPerRun: this.config.crawl.maxRequestsPerRun,
+      areaCount: selectedAreaCount,
+    });
     const plan = planAdaptivePartitions(basePartitions, this.store.getListings(), {
-      totalBudget: Math.min(this.config.crawl.maxListings, basePartitions.length * this.config.crawl.listingsPerArea),
+      totalBudget: Math.max(selectedAreaCount, requestAwareBudget),
       maxAreas: this.config.crawl.maxAreas,
       offset: this.planning.areaOffset,
     });
@@ -324,10 +363,8 @@ export class PublicCrawler {
       configuredFocusAreaCount: TEHRAN_FOCUS_AREAS.length,
       queuedAreaCount: partitions.length,
       listingsPerArea: this.config.crawl.listingsPerArea,
-      targetCandidates: Math.min(
-        this.config.crawl.maxListings,
-        partitions.length * this.config.crawl.listingsPerArea,
-      ),
+      targetCandidates: plan.totalBudget,
+      requestAwareBudget,
     };
     this.logger.info("crawl.area-queue.ready", "Tehran buy-apartment area queue created", {
       ...diagnostics.queue,
@@ -676,11 +713,6 @@ export class PublicCrawler {
   }
 
   async run() {
-    const previousState = await this.store.readServiceState();
-    this.planning = {
-      areaOffset: previousState?.planning?.nextAreaOffset || 0,
-      nextAreaOffset: previousState?.planning?.nextAreaOffset || 0,
-    };
     this.requestBudget = new RequestBudget({
       maxPerRun: this.config.crawl.maxRequestsPerRun,
       maxPerMinute: this.config.crawl.maxRequestsPerMinute,
@@ -716,6 +748,11 @@ export class PublicCrawler {
       lastListingToken: null,
       error: null,
     };
+    const previousState = await this.store.readServiceState();
+    this.planning = {
+      areaOffset: previousState?.planning?.nextAreaOffset || 0,
+      nextAreaOffset: previousState?.planning?.nextAreaOffset || 0,
+    };
     await this.persistState();
     this.logger.info("crawl.run.start", "Live public crawl started", {
       runId: this.state.runId,
@@ -732,13 +769,13 @@ export class PublicCrawler {
       this.state.status = "discovering";
       await this.persistState();
       const searchPage = await this.context.newPage();
-      const { listings, diagnostics } = await this.discover(searchPage);
+      const { listings, diagnostics } = await this.discover(searchPage, async (newlyDiscovered) => {
+        // Persist usable records as each area is discovered. A long or
+        // interrupted crawl must not leave MongoDB empty until all Tehran
+        // areas have finished discovery.
+        await this.processDetails(newlyDiscovered, { append: true });
+      });
       await searchPage.close();
-      if (!this.stopRequested && listings.length) {
-        this.state.status = "processing";
-        await this.persistState();
-        await this.processDetails(listings);
-      }
       const lifecycleEligibleAreaIds = diagnostics.partitions
         .filter((partition) => partition.stopReason === "source-exhausted")
         .map((partition) => partition.area?.id)

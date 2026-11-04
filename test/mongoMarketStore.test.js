@@ -23,14 +23,14 @@ function listing(now = "2026-10-26T00:00:00.000Z") {
 test("Mongo store persists the listing before updating its cache and records changes in Mongo", async () => {
   const calls = [];
   const listingModel = { async replaceOne(filter, value) { calls.push(["listing", filter, value]); } };
-  const observationModel = { async create(value) { calls.push(["observation", value]); } };
+  const observationModel = { async updateOne(filter, value, options) { calls.push(["observation", { filter, value, options }]); } };
   const store = new MongoMarketStore({}, logger, { mongoUri: "mongodb://example", listingModel, observationModel });
   const value = listing();
   const result = await store.upsertListing(value, "run-one");
   assert.deepEqual(calls.map(([kind]) => kind), ["listing", "observation"]);
   assert.equal(result.listing.lifecycle.lastConfirmedRunId, "run-one");
   assert.equal(store.getListing("mongo-one").token, "mongo-one");
-  assert.equal(calls[1][1].snapshot.description, "متن عمومی");
+  assert.equal(calls[1][1].value.$setOnInsert.snapshot.description, "متن عمومی");
 });
 
 test("ListingObservation is strict and validates a complete public snapshot", async () => {

@@ -69,7 +69,6 @@ export async function runScoringPipeline(
       rejected: cleaned.rejected,
       listings: cleaned.records,
     }, "scoring-ready document");
-    await writeJsonAtomic(paths.scoringReady, scoringReadyDocument);
     emit({
       type: "clean.complete",
       acceptedCount: cleaned.records.length,
@@ -88,7 +87,6 @@ export async function runScoringPipeline(
       generatedAt: new Date().toISOString(),
       model: trained.model,
     }, "scoring model document");
-    await writeJsonAtomic(paths.model, modelDocument);
     emit({
       type: "model.complete",
       validation: trained.model.validation,
@@ -115,7 +113,6 @@ export async function runScoringPipeline(
       summary: scored.summary,
       listings: scored.listings,
     }, "scored-listings document");
-    await writeJsonAtomic(paths.scoredListings, scoredDocument);
     emit({
       type: "score.complete",
       scoredCount: scored.listings.length,
@@ -137,8 +134,17 @@ export async function runScoringPipeline(
       scoring: scored.summary,
       events,
     }, "scoring report");
-    await writeJsonAtomic(paths.report, report);
-    const result = { paths, report, topListings: scored.listings.slice(0, 20) };
+    const documents = { scoringReadyDocument, modelDocument, scoredDocument };
+    if (typeof callbacks.onPersist === "function") {
+      await callbacks.onPersist({ report, ...documents });
+    }
+    await Promise.all([
+      writeJsonAtomic(paths.scoringReady, scoringReadyDocument),
+      writeJsonAtomic(paths.model, modelDocument),
+      writeJsonAtomic(paths.scoredListings, scoredDocument),
+      writeJsonAtomic(paths.report, report),
+    ]);
+    const result = { paths, report, documents, topListings: scored.listings.slice(0, 20) };
     invoke(callbacks.onComplete, result);
     return result;
   } catch (error) {

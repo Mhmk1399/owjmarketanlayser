@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { resolveListingLocation } from "../locations/hierarchy.js";
 import { nextLifecycleStatus } from "../collector/listingPolicy.js";
+import { classifyAdvertiser } from "../collector/advertiserClassifier.js";
 
 async function readJson(file, fallback) {
   try {
@@ -36,13 +37,6 @@ function safeToken(token) {
   return value;
 }
 
-function migrateAdvertiserType(value, isBusiness) {
-  const text = String(value || "").toLowerCase();
-  if (isBusiness === true || /business|agency|dealer|املاک|مشاور|بنگاه/.test(text)) return "real-estate-business";
-  if (isBusiness === false || /personal|private|individual|شخصی|مالک/.test(text)) return "personal";
-  return "unknown";
-}
-
 function migrateListing(listing) {
   if (!listing || typeof listing !== "object") return listing;
   const migrated = listing.crawlPartition ? listing : {
@@ -52,7 +46,11 @@ function migrateListing(listing) {
       area: null,
     },
   };
-  const advertiserType = migrateAdvertiserType(migrated.advertiserType, migrated.advertiserSignals?.isBusiness);
+  const advertiser = classifyAdvertiser({
+    ...(migrated.advertiserSignals || {}),
+    type: migrated.advertiserSignals?.type || migrated.advertiserType,
+  }, migrated.description);
+  const advertiserType = advertiser.type;
   const { reasons: _legacyReasons, ...quality } = migrated.quality || {};
   return {
     ...migrated,
@@ -73,13 +71,14 @@ function migrateListing(listing) {
     },
     advertiserSignals: {
       type: advertiserType,
-      isBusiness: migrated.advertiserSignals?.isBusiness ?? null,
+      isBusiness: advertiser.isBusiness,
       hasBusinessBadge: migrated.advertiserSignals?.hasBusinessBadge ?? null,
       panelType: migrated.advertiserSignals?.panelType ?? null,
       hasBusinessReference: migrated.advertiserSignals?.hasBusinessReference ?? null,
-      classificationSource: migrated.advertiserSignals?.classificationSource ?? [],
-      confidence: migrated.advertiserSignals?.confidence ?? "low",
-      businessDisplayName: migrated.advertiserSignals?.businessDisplayName ?? null,
+      classificationSource: advertiser.classificationSource,
+      confidence: advertiser.confidence,
+      businessDisplayName: advertiserType === "real-estate-business"
+        ? migrated.advertiserSignals?.businessDisplayName ?? null : null,
     },
     media: migrated.media ?? { samePropertyImageClaim: null, claimSource: null },
     publication: migrated.publication ?? { text: migrated.publishedText ?? null, source: null },

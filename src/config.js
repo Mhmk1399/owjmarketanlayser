@@ -22,6 +22,11 @@ export const config = {
   port: integer(process.env.ANALYTICS_PORT, 4567, 1, 65535),
   mongoUri: process.env.MONGODB_URI || null,
   mongoDbName: process.env.MONGODB_DB_NAME || "owj_market_analytics",
+  mongoRetry: {
+    attempts: integer(process.env.MONGODB_RETRY_ATTEMPTS, 5, 1, 20),
+    baseDelayMs: integer(process.env.MONGODB_RETRY_BASE_DELAY_MS, 1_000, 100, 60_000),
+    maxDelayMs: integer(process.env.MONGODB_RETRY_MAX_DELAY_MS, 30_000, 1_000, 300_000),
+  },
   neshanMapKey: process.env.NEXT_PUBLIC_NESHAN_MAP_KEY || null,
   // Service keys belong on the server. A public web-map key is intentionally
   // never reused for Nearby Search or Routing because Neshan scopes key types.
@@ -34,6 +39,12 @@ export const config = {
     21_600_000,
     60_000,
     604_800_000,
+  ),
+  crawlFailureRetryMs: integer(
+    process.env.ANALYTICS_CRAWL_FAILURE_RETRY_MS,
+    60_000,
+    10_000,
+    3_600_000,
   ),
   browser: {
     headless: bool(process.env.ANALYTICS_HEADLESS, true),
@@ -88,7 +99,7 @@ export const config = {
     changedDetailHours: integer(process.env.ANALYTICS_CHANGED_DETAIL_HOURS, 2, 1, 48),
     staleDetailHours: integer(process.env.ANALYTICS_STALE_DETAIL_HOURS, 24, 1, 720),
     removalMissThreshold: integer(process.env.ANALYTICS_REMOVAL_MISS_THRESHOLD, 3, 2, 20),
-    maxRequestsPerRun: integer(process.env.ANALYTICS_MAX_REQUESTS_PER_RUN, 5_000, 10, 100_000),
+    maxRequestsPerRun: integer(process.env.ANALYTICS_MAX_REQUESTS_PER_RUN, 15_000, 10, 100_000),
     maxRequestsPerMinute: integer(process.env.ANALYTICS_MAX_REQUESTS_PER_MINUTE, 35, 1, 120),
   },
   analytics: {
@@ -118,6 +129,12 @@ export const config = {
       5_000,
       300_000,
     ),
+    minimumIntervalMs: integer(
+      process.env.ANALYTICS_LIVE_SCORING_MIN_INTERVAL_MS,
+      900_000,
+      30_000,
+      86_400_000,
+    ),
   },
   paths: {
     data: path.join(serviceRoot, "data"),
@@ -132,7 +149,7 @@ export const config = {
     scoringReport: path.join(serviceRoot, "data", "scoring-report.json"),
     serviceState: path.join(serviceRoot, "data", "service-state.json"),
     observations: path.join(serviceRoot, "data", "observations"),
-    logFile: path.join(serviceRoot, "logs", "service.jsonl"),
+    logFile: path.join(serviceRoot, "logs", path.basename(process.env.ANALYTICS_LOG_FILE || "service.jsonl")),
   },
   jsonSnapshotEvery: integer(
     process.env.ANALYTICS_JSON_SNAPSHOT_EVERY,

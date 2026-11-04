@@ -117,13 +117,19 @@ test("callback-driven pipeline writes all four no-null scoring documents", async
     listings: Array.from({ length: 130 }, (_, index) => rawListing(index)),
   }));
   const eventTypes = [];
+  let persistedBeforeSnapshots = false;
   const result = await runScoringPipeline({ paths }, {
     onEvent: (event) => eventTypes.push(event.type),
+    onPersist: async (documents) => {
+      persistedBeforeSnapshots = await fs.stat(paths.scoredListings).then(() => false, () => true);
+      assert.equal(documents.scoredDocument.listings.length, 130);
+    },
   });
   assert.equal(result.report.status, "completed");
   assert.ok(eventTypes.includes("clean.complete"));
   assert.ok(eventTypes.includes("model.complete"));
   assert.ok(eventTypes.includes("score.complete"));
+  assert.equal(persistedBeforeSnapshots, true);
   const scoredDocument = JSON.parse(await fs.readFile(paths.scoredListings, "utf8"));
   assert.equal(scoredDocument.scoringVersion, "similarity-adjusted-value-score-v3");
   assert.ok(scoredDocument.valuationValidation.sampleCount > 0);

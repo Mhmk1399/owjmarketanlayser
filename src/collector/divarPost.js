@@ -1,5 +1,6 @@
 import { canonicalizeDivarUrl } from "../utils/divarUrl.js";
 import { parseRetryAfter } from "./retry.js";
+import { classifyAdvertiser } from "./advertiserClassifier.js";
 
 const PUBLIC_POST_ENDPOINT = "https://api.divar.ir/v8/posts-v2/web";
 const TOKEN = /^[A-Za-z0-9_-]+$/;
@@ -71,7 +72,48 @@ export async function fetchPublicPostDocument(requestSource, token, { timeoutMs 
       code: "invalid-shape",
     });
   }
+  // The agency card is rendered by a separate, unauthenticated public lazy
+  // section. Keep only its displayed business name; never retain its request
+  // data, owner hash, action, contact fields, or business reference.
+  document.public_business_display_name = await fetchPublicBusinessDisplayName(
+    requestSource,
+    document,
+    { timeoutMs },
+  ).catch(() => null);
   return { document, status, url: response.url?.() || url };
+}
+
+export async function fetchPublicBusinessDisplayName(requestSource, document, { timeoutMs = 15_000 } = {}) {
+  const request = typeof requestSource?.post === "function" ? requestSource : null;
+  const lazyRequest = publicBusinessLazyRequest(document);
+  if (!request || !lazyRequest) return null;
+  const response = await request.post(lazyRequest.url, {
+    failOnStatusCode: false,
+    timeout: timeoutMs,
+    headers: { accept: "application/json-filled", "content-type": "application/json" },
+    data: lazyRequest.data,
+  });
+  if (response.status() !== 200) return null;
+  return businessDisplayNameFromPayload(await response.json());
+}
+
+export function publicBusinessLazyRequest(document) {
+  if (!Array.isArray(document?.sections)) return null;
+  const lazy = collectWidgets(document.sections).find((widget) => (
+    widget.widget_type === "LAZY_SECTION"
+      && text(widget.data?.request_data?.post_business_type)
+      && text(widget.data?.rest_request_path)
+  ));
+  if (!lazy) return null;
+  const url = new URL(lazy.data.rest_request_path, "https://api.divar.ir");
+  if (url.protocol !== "https:" || url.hostname !== "api.divar.ir"
+    || /postcontact|contact_info/i.test(url.pathname)) return null;
+  return { url: url.href, data: lazy.data.request_data };
+}
+
+export function businessDisplayNameFromPayload(payload) {
+  const card = collectWidgets(payload).find((widget) => widget.widget_type === "EVENT_ROW");
+  return text(card?.data?.title);
 }
 
 function collectWidgets(input, output = [], seen = new Set()) {
@@ -178,6 +220,7 @@ function imagesFrom(widgets) {
   const images = [];
   for (const widget of widgets) {
     if (widget.widget_type !== "IMAGE_CAROUSEL") continue;
+    const aspect = widget.data?.image_aspect_ratio?.dynamic_aspect_ratio;
     for (const item of widget.data?.items || []) {
       const image = item.image || {};
       const url = text(image.url) || text(item.image_url);
@@ -185,14 +228,17 @@ function imagesFrom(widgets) {
         url,
         width: Number.isFinite(Number(image.width ?? item.width)) ? Number(image.width ?? item.width) : null,
         height: Number.isFinite(Number(image.height ?? item.height)) ? Number(image.height ?? item.height) : null,
-        alt: text(item.alt) || text(item.title),
+        thumbnailUrl: text(image.thumbnail_url),
+        aspectRatio: Number.isFinite(Number(aspect?.width)) && Number.isFinite(Number(aspect?.height))
+          ? { width: Number(aspect.width), height: Number(aspect.height) } : null,
+        alt: text(image.alt) || text(item.alt) || text(item.title),
       });
     }
   }
   return [...new Map(images.map((image) => [image.url, image])).values()];
 }
 
-function advertiserSignalsFrom(widgets, document) {
+function advertiserSignalsFrom(widgets, document, description = null) {
   const businessWidgets = widgets.filter((widget) =>
     /BUSINESS|AGENCY|DEALER|PRO|SELLER|POSTER|LAZY_SECTION/.test(widget.widget_type));
   const widgetPanelType = businessWidgets
@@ -232,19 +278,28 @@ function advertiserSignalsFrom(widgets, document) {
   ].filter(Boolean);
   const explicitBusiness = isBusiness === true;
   const businessDisplayName = explicitBusiness
-    ? text(document.business_data?.name)
+    ? text(document.public_business_display_name)
+      || text(document.business_data?.name)
       || text(document.business?.name)
       || businessWidgets.map((widget) => text(widget.data?.business_name)).find(Boolean)
       || null
     : null;
-  return {
+  const classified = classifyAdvertiser({
     type: isBusiness === true ? "real-estate-business" : isBusiness === false ? "personal" : "unknown",
     isBusiness,
     hasBusinessBadge: hasBusinessSection ? true : explicitPersonal ? false : null,
     panelType,
     hasBusinessReference,
     classificationSource,
-    confidence: classificationSource.length ? "high" : "low",
+  }, description);
+  return {
+    type: classified.type,
+    isBusiness: classified.isBusiness,
+    hasBusinessBadge: hasBusinessSection ? true : explicitPersonal ? false : null,
+    panelType,
+    hasBusinessReference,
+    classificationSource: classified.classificationSource,
+    confidence: classified.confidence,
     businessDisplayName,
   };
 }
@@ -309,6 +364,7 @@ export function adaptPublicPostDocument(document, discovered) {
   const publishedWidget = firstWidget(widgets, "EXPANDABLE_SECTION")?.data;
   const mapLocation = mapLocationFrom(widgets);
   const url = canonicalizeDivarUrl(discovered?.url || document.share?.web_url || `https://divar.ir/v/${token}`);
+  const description = descriptionFrom(document.sections, widgets, document);
 
   return {
     token,
@@ -321,13 +377,13 @@ export function adaptPublicPostDocument(document, discovered) {
     neighborhood: text(document.seo?.web_info?.district_persian),
     sourceNeighborhoodSlug: text(document.seo?.web_info?.district_slug),
     publishedText: text(publishedWidget?.title),
-    description: descriptionFrom(document.sections, widgets, document),
+    description,
     breadcrumbs,
     structuredAttributes,
     mediaSignals: mediaSignalsFrom(structuredAttributes),
     amenities: amenitiesFrom(widgets),
     images: imagesFrom(widgets),
-    advertiserSignals: advertiserSignalsFrom(widgets, document),
+    advertiserSignals: advertiserSignalsFrom(widgets, document, description),
     apiCoordinates: mapLocation ? [mapLocation] : [],
     extractionSource: "posts-v2",
   };

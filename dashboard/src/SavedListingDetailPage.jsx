@@ -1418,8 +1418,9 @@ export default function SavedListingDetailPage({ token }) {
               {persianText(advertiserLabels[listing.advertiserType] || "نامشخص")}
             </strong>
             <p>
-              این طبقه‌بندی فقط از سیگنال‌های عمومی کسب‌وکار ساخته شده و هیچ نام
-              یا اطلاعات تماسی ذخیره نمی‌شود.
+              ابتدا برچسب عمومی دیوار بررسی می‌شود و سپس زبان توضیحات آگهی، با
+              محافظت در برابر عبارت‌هایی مانند «املاک تماس نگیرد». هیچ اطلاعات
+              تماسی در این طبقه‌بندی ذخیره نمی‌شود.
             </p>
           </section>
           <section id="owj-amenities" className="saved-panel saved-panel--wide">

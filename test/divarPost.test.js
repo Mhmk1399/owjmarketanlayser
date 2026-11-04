@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   adaptPublicPostDocument,
+  fetchPublicBusinessDisplayName,
   fetchPublicPostDocument,
   publicPostUrl,
 } from "../src/collector/divarPost.js";
@@ -60,8 +61,9 @@ function postDocument() {
         {
           widget_type: "IMAGE_CAROUSEL",
           data: {
+            image_aspect_ratio: { dynamic_aspect_ratio: { width: 4, height: 3 } },
             items: [
-              { image: { url: "https://postimage.divarcdn.com/one.webp" } },
+              { image: { url: "https://postimage.divarcdn.com/one.webp", thumbnail_url: "https://postimage.divarcdn.com/one-thumb.webp", alt: "تصویر ملک" } },
               { image: { url: "https://postimage.divarcdn.com/two.webp" } },
             ],
           },
@@ -116,6 +118,9 @@ test("posts-v2 adapter extracts public housing fields and drops contact metadata
   assert.equal(raw.structuredAttributes["متراژ"], "۷۰");
   assert.deepEqual(raw.amenities, { elevator: true, parking: true, storage: false });
   assert.equal(raw.images.length, 2);
+  assert.equal(raw.images[0].thumbnailUrl, "https://postimage.divarcdn.com/one-thumb.webp");
+  assert.deepEqual(raw.images[0].aspectRatio, { width: 4, height: 3 });
+  assert.equal(raw.images[0].alt, "تصویر ملک");
   assert.equal(raw.advertiserSignals.type, "personal");
   assert.equal(Object.hasOwn(raw, "contact"), false);
   assert.doesNotMatch(JSON.stringify(raw), /09121111111|must-not-be-retained/);
@@ -155,6 +160,46 @@ test("posts-v2 adapter retains an explicitly public business display name", () =
   assert.equal(raw.advertiserSignals.panelType, "real_estate_agency");
 });
 
+test("public business lazy section retains only the displayed agency name", async () => {
+  const document = postDocument();
+  document.sections.push({
+    section_name: "BUSINESS_SECTION",
+    widgets: [{
+      widget_type: "LAZY_SECTION",
+      data: {
+        rest_request_path: "/v8/post/business/public/lazy",
+        request_data: {
+          post_token: discovered.token,
+          hashed_post_owner_user_id: "transient-owner-hash",
+          post_business_type: "premium-panel",
+        },
+      },
+    }],
+  });
+  let captured;
+  const name = await fetchPublicBusinessDisplayName({
+    post: async (url, options) => {
+      captured = { url, options };
+      return {
+        status: () => 200,
+        json: async () => ({
+          widget_list: [{ widget_type: "EVENT_ROW", data: {
+            title: "هلدینگ عمومی نمونه",
+            action: { phone: "02100000000", token: "must-not-be-retained" },
+          } }],
+        }),
+      };
+    },
+  }, document);
+  assert.equal(name, "هلدینگ عمومی نمونه");
+  assert.equal(captured.url, "https://api.divar.ir/v8/post/business/public/lazy");
+  assert.equal(captured.options.data.hashed_post_owner_user_id, "transient-owner-hash");
+  document.public_business_display_name = name;
+  const raw = adaptPublicPostDocument(document, discovered);
+  assert.equal(raw.advertiserSignals.businessDisplayName, "هلدینگ عمومی نمونه");
+  assert.doesNotMatch(JSON.stringify(raw), /02100000000|must-not-be-retained|transient-owner-hash/);
+});
+
 test("premium panel, business reference presence and image claim are extracted without retaining the reference", () => {
   const document = postDocument();
   document.analytics.cat3 = "plot-old";
@@ -191,10 +236,30 @@ test("premium panel, business reference presence and image claim are extracted w
   assert.equal(listing.advertiserSignals.hasBusinessReference, true);
 });
 
-test("absence of explicit advertiser evidence remains unknown", () => {
+test("absence of explicit advertiser evidence defaults to personal", () => {
   const document = postDocument();
   delete document.webengage;
-  assert.equal(adaptPublicPostDocument(document, discovered).advertiserSignals.type, "unknown");
+  const signals = adaptPublicPostDocument(document, discovered).advertiserSignals;
+  assert.equal(signals.type, "personal");
+  assert.equal(signals.confidence, "low");
+});
+
+test("description agency language overrides a personal tag but rejects contact-negation false positives", () => {
+  const agency = postDocument();
+  agency.sections[0].widgets.find((widget) => widget.widget_type === "DESCRIPTION_ROW").data.text
+    = "مشاور تخصصی منطقه؛ فایل‌های مشابه موجود است";
+  const agencySignals = adaptPublicPostDocument(agency, discovered).advertiserSignals;
+  assert.equal(agencySignals.type, "real-estate-business");
+  assert.equal(agencySignals.confidence, "medium");
+  assert.equal(agencySignals.classificationSource.some((source) => source.startsWith("description-business-language:")), true);
+
+  const owner = postDocument();
+  delete owner.webengage;
+  owner.sections[0].widgets.find((widget) => widget.widget_type === "DESCRIPTION_ROW").data.text
+    = "فروشنده مالک است؛ املاک تماس نگیرد";
+  const ownerSignals = adaptPublicPostDocument(owner, discovered).advertiserSignals;
+  assert.equal(ownerSignals.type, "personal");
+  assert.equal(ownerSignals.classificationSource.includes("description-business-negation"), true);
 });
 
 test("description extraction ignores publication-history rows", () => {

@@ -4,7 +4,12 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import mongoose from "mongoose";
 import { Listing } from "../src/models/listing.js";
-import { adaptPublicPostDocument, publicPostUrl } from "../src/collector/divarPost.js";
+import {
+  adaptPublicPostDocument,
+  businessDisplayNameFromPayload,
+  publicBusinessLazyRequest,
+  publicPostUrl,
+} from "../src/collector/divarPost.js";
 import { _publicListingHelpers } from "../src/collector/publicListing.js";
 import { mergeBackfilledPublicDetails, needsPublicDetailBackfill } from "../src/collector/detailBackfill.js";
 
@@ -54,7 +59,7 @@ function discoveredFrom(listing) {
   };
 }
 
-async function fetchDocument(token) {
+async function fetchDocument(token, waitForSlot = async () => {}) {
   const response = await fetch(publicPostUrl(token), {
     headers: { accept: "application/json-filled", "accept-language": "fa-IR,fa;q=0.9,en;q=0.5" },
     signal: AbortSignal.timeout(15_000),
@@ -67,6 +72,19 @@ async function fetchDocument(token) {
   }
   const document = await response.json();
   if (!document || !Array.isArray(document.sections)) throw new Error("Public detail has no sections array");
+  const businessRequest = publicBusinessLazyRequest(document);
+  if (businessRequest) {
+    await waitForSlot();
+    const businessResponse = await fetch(businessRequest.url, {
+      method: "POST",
+      headers: { accept: "application/json-filled", "content-type": "application/json" },
+      body: JSON.stringify(businessRequest.data),
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (businessResponse.ok) {
+      document.public_business_display_name = businessDisplayNameFromPayload(await businessResponse.json());
+    }
+  }
   return document;
 }
 
@@ -103,8 +121,8 @@ try {
   const documents = (await Listing.find({}).sort({ "lifecycle.detailFetchedAt": 1, token: 1 }).lean())
     .map(({ _id, ...listing }) => JSON.parse(JSON.stringify(listing)));
   const candidates = documents.filter((listing) => refreshAll
-    ? listing.schemaVersion !== "2.0.0"
-    : needsPublicDetailBackfill(listing))
+    ? true
+    : needsPublicDetailBackfill(listing)
     .filter((listing) => retryTerminal || !["not-found", "gone"].includes(state.attempted[listing.token]?.status));
   const queue = limit > 0 ? candidates.slice(0, limit) : candidates;
   process.stdout.write(`${JSON.stringify({ event: "backfill-start", mode: refreshAll ? "all" : "missing-public-details", candidates: candidates.length, queued: queue.length, intervalMs, concurrency })}\n`);
@@ -144,7 +162,7 @@ try {
       if (stopRequested) return;
     const attemptedAt = new Date().toISOString();
     try {
-      const document = await fetchDocument(existing.token);
+      const document = await fetchDocument(existing.token, waitForRequestSlot);
       const raw = adaptPublicPostDocument(document, discoveredFrom(existing));
       const extracted = _publicListingHelpers.normalizePublicListing(raw, existing, discoveredFrom(existing));
       const merged = mergeBackfilledPublicDetails(existing, extracted);
