@@ -20,6 +20,30 @@ function listing(now = "2026-10-26T00:00:00.000Z") {
   }, null, now, { category: "buy-apartment", expectedSubcategory: "buy-residential-apartment", area: null });
 }
 
+test("Mongo listing pages apply filters, stable ordering, skip and a 40-item limit in MongoDB", async () => {
+  const calls = [];
+  const chain = {
+    sort(value) { calls.push(["sort", value]); return this; },
+    skip(value) { calls.push(["skip", value]); return this; },
+    limit(value) { calls.push(["limit", value]); return this; },
+    async lean() { return [{ _id: "private-id", token: "listing-41" }]; },
+  };
+  const listingModel = {
+    countDocuments(filter) { calls.push(["count", filter]); return Promise.resolve(81); },
+    find(filter) { calls.push(["find", filter]); return chain; },
+  };
+  const store = new MongoMarketStore({}, logger, { listingModel });
+  const result = await store.queryListings({ offset: 40, limit: 100, status: "active", query: "a.b" });
+  assert.equal(result.total, 81);
+  assert.deepEqual(result.listings, [{ token: "listing-41" }]);
+  assert.deepEqual(calls[0][1], calls[1][1]);
+  assert.deepEqual(calls[0][1].$and[0], { "lifecycle.status": "active" });
+  assert.equal(calls[0][1].$and[1].$or[0].title.$regex, "a\\.b");
+  assert.deepEqual(calls.slice(2), [
+    ["sort", { lastSeenAt: -1, token: 1 }], ["skip", 40], ["limit", 40],
+  ]);
+});
+
 test("Mongo store persists the listing before updating its cache and records changes in Mongo", async () => {
   const calls = [];
   const listingModel = { async replaceOne(filter, value) { calls.push(["listing", filter, value]); } };

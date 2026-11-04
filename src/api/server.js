@@ -8,6 +8,7 @@ import { fetchNearbyPlaces } from "../services/neshanPlaces.js";
 import { buildDataQualityBaseline } from "./dataQuality.js";
 import { ScoringScenario } from "../models/scoringScenario.js";
 import { calculateSavedScenario, scenarioDocument } from "../scoring/scenarioService.js";
+import { normalizeListingPage } from "../storage/listingPagination.js";
 
 function sendJson(response, status, value) {
   const body = JSON.stringify(value, null, 2);
@@ -448,8 +449,10 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
         if (!stored) return sendJson(response, 404, { error: "scenario-not-found" });
         if (!scoredDocument?.listings) return sendJson(response, 404, { error: "scores-not-generated" });
         const calculated = calculateSavedScenario(scoredDocument, plainScenario(stored));
-        const offset = numberParam(url.searchParams.get("offset"), 0, 0, 1_000_000);
-        const limit = numberParam(url.searchParams.get("limit"), 100, 1, 500);
+        const { offset, limit } = normalizeListingPage({
+          offset: url.searchParams.get("offset") ?? undefined,
+          limit: url.searchParams.get("limit") ?? undefined,
+        });
         const rows = calculated.rows.flatMap((row) => {
           const listing = store.getListing(row.token);
           if (!listing || !matchesListingQuery(listing, url)) return [];
@@ -516,8 +519,10 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
       }
 
       if (request.method === "GET" && url.pathname === "/listings") {
-        const offset = numberParam(url.searchParams.get("offset"), 0, 0, 1_000_000);
-        const limit = numberParam(url.searchParams.get("limit"), 50, 1, 500);
+        const { offset, limit } = normalizeListingPage({
+          offset: url.searchParams.get("offset") ?? undefined,
+          limit: url.searchParams.get("limit") ?? undefined,
+        });
         const district = url.searchParams.get("district");
         const area = url.searchParams.get("area");
         const category = url.searchParams.get("category");
@@ -533,7 +538,8 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
             minArea: numeric("minArea"), maxArea: numeric("maxArea"), minRooms: numeric("minRooms"), minYear: numeric("minYear"), amenities });
           return sendJson(response, 200, {
             schemaVersion: "1.0.0", generatedAt: new Date().toISOString(), total: result.total,
-            offset, limit, listings: result.listings.map(externalListing),
+            offset, limit, hasMore: offset + result.listings.length < result.total,
+            listings: result.listings.map(externalListing),
           });
         }
         const all = store.getListings().filter((listing) => {
@@ -557,6 +563,7 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
           total: all.length,
           offset,
           limit,
+          hasMore: offset + Math.min(limit, Math.max(0, all.length - offset)) < all.length,
           listings: all.slice(offset, offset + limit).map(externalListing),
         });
       }

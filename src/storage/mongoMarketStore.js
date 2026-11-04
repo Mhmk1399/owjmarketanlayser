@@ -7,8 +7,12 @@ import { ScoringScenario } from "../models/scoringScenario.js";
 import { DriftMetric, ListingScore, ModelVersion, TrainingRun } from "../models/scoringState.js";
 import { JsonMarketStore, _jsonHelpers } from "./jsonStore.js";
 import { nextLifecycleStatus } from "../collector/listingPolicy.js";
+<<<<<<< HEAD
 import { withMongoRetry } from "./mongoRetry.js";
 import { persistScoringGeneration, promoteModel, rollbackModel } from "../scoring/modelRegistry.js";
+=======
+import { normalizeListingPage } from "./listingPagination.js";
+>>>>>>> 5a8833d267be7333f16cd007685209df638b2579
 
 function plain(value) {
   return JSON.parse(JSON.stringify(value));
@@ -67,7 +71,7 @@ export class MongoMarketStore extends JsonMarketStore {
       this.modelVersionModel.init(), this.trainingRunModel.init(),
       this.listingScoreModel.init(), this.driftMetricModel.init(),
     ]);
-    const documents = await this.listingModel.find({}).lean();
+    const documents = await this.listingModel.find({}).batchSize(1000).lean();
     this.listings.clear();
     for (const { _id, ...document } of documents) {
       const listing = plain(document);
@@ -81,6 +85,7 @@ export class MongoMarketStore extends JsonMarketStore {
     });
   }
 
+<<<<<<< HEAD
   async reconcileInterruptedRun() {
     const document = await this.serviceStateModel.findOne({ key: "crawler" }).lean();
     if (!document || !["starting", "discovering", "processing"].includes(document.crawl?.status)) return null;
@@ -111,6 +116,10 @@ export class MongoMarketStore extends JsonMarketStore {
   }
 
   async queryListings({ offset = 0, limit = 50, district, area, category, advertiserType, query, readiness, status, minPrice, maxPrice, minPricePerMeter, maxPricePerMeter, minArea, maxArea, minRooms, minYear, amenities = [] } = {}) {
+=======
+  async queryListings({ offset, limit, district, area, category, advertiserType, query, readiness, status, minPrice, maxPrice, minPricePerMeter, maxPricePerMeter, minArea, maxArea, minRooms, minYear, amenities = [] } = {}) {
+    ({ offset, limit } = normalizeListingPage({ offset, limit }));
+>>>>>>> 5a8833d267be7333f16cd007685209df638b2579
     const filters = [];
     if (district) filters.push({ $or: [
       { district }, { neighborhood: district },

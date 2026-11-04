@@ -35,3 +35,30 @@ test("data quality navigation serves the app while JSON clients retain their API
     assert.equal((await response.json()).inventory.total, 0);
   }
 });
+
+test("listings API defaults and caps pages at 40 and forwards pagination to the store", async (t) => {
+  const requests = [];
+  const server = createAnalyticsServer({
+    config: { paths: {} },
+    store: { async queryListings(options) {
+      requests.push(options);
+      return { total: 81, listings: Array.from({ length: Math.min(options.limit, Math.max(0, 81 - options.offset)) }, (_, i) => ({ token: String(options.offset + i) })) };
+    } },
+    analytics: {}, crawler: {}, logger: { info() {}, error() {} },
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const first = await (await fetch(`${origin}/listings`)).json();
+  assert.equal(first.limit, 40);
+  assert.equal(first.listings.length, 40);
+  assert.equal(first.hasMore, true);
+  const second = await (await fetch(`${origin}/listings?offset=40&limit=500&status=active`)).json();
+  assert.equal(second.offset, 40);
+  assert.equal(second.limit, 40);
+  assert.equal(second.listings[0].token, "40");
+  assert.equal(requests[1].status, "active");
+  const last = await (await fetch(`${origin}/listings?offset=80`)).json();
+  assert.equal(last.listings.length, 1);
+  assert.equal(last.hasMore, false);
+});
