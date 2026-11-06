@@ -80,6 +80,11 @@ export class PublicCrawler {
     this.publicPostRequest = null;
     this.stopRequested = false;
     this.currentPromise = null;
+    this.currentRunKind = null;
+    this.currentAreaJob = null;
+    this.areaJobs = new Map();
+    this.priorityAreaJobIds = [];
+    this.activePriorityAreaJob = null;
     this.requestSchedule = Promise.resolve();
     this.stateWriteQueue = Promise.resolve();
     this.lastPublicRequestAt = 0;
@@ -145,11 +150,17 @@ export class PublicCrawler {
   }
 
   start() {
-    if (this.currentPromise) return { started: false, reason: "crawl-already-running", state: this.snapshot() };
+    if (this.currentPromise) return {
+      started: false,
+      reason: this.currentRunKind === "targeted-area" ? "targeted-area-job-running" : "crawl-already-running",
+      state: this.snapshot(),
+      areaJob: this.areaJobSnapshot(),
+    };
     if (this.cooldownUntil && Date.now() < Date.parse(this.cooldownUntil)) {
       return { started: false, reason: "platform-cooldown", cooldownUntil: this.cooldownUntil, state: this.snapshot() };
     }
     this.stopRequested = false;
+    this.currentRunKind = "full";
     this.currentPromise = this.run()
       .catch(async (error) => {
         this.state.status = "failed";
@@ -171,8 +182,137 @@ export class PublicCrawler {
       })
       .finally(() => {
         this.currentPromise = null;
+        this.currentRunKind = null;
       });
     return { started: true, state: this.snapshot() };
+  }
+
+  areaJobSnapshot(job = this.currentAreaJob) {
+    return job ? JSON.parse(JSON.stringify(job)) : null;
+  }
+
+  getAreaJob(jobId) {
+    return this.areaJobSnapshot(this.areaJobs.get(String(jobId)) || null);
+  }
+
+  rememberAreaJob(job) {
+    this.areaJobs.set(job.jobId, job);
+    while (this.areaJobs.size > 20) this.areaJobs.delete(this.areaJobs.keys().next().value);
+  }
+
+  createAreaJob(area, status = "starting") {
+    return {
+      jobId: randomUUID(),
+      area: { id: area.id, name: area.name, slug: area.slug },
+      status,
+      requestedAt: new Date().toISOString(),
+      startedAt: null,
+      endedAt: null,
+      discovered: 0,
+      processed: 0,
+      successful: 0,
+      failed: 0,
+      newListings: 0,
+      error: null,
+    };
+  }
+
+  takePriorityAreaJob() {
+    while (this.priorityAreaJobIds.length) {
+      const job = this.areaJobs.get(this.priorityAreaJobIds.shift());
+      if (job?.status === "queued") {
+        this.activePriorityAreaJob = job;
+        return job;
+      }
+    }
+    return null;
+  }
+
+  finishPendingPriorityJobs(status, error = null) {
+    if (this.activePriorityAreaJob && !["completed", "failed", "stopped"].includes(this.activePriorityAreaJob.status)) {
+      this.activePriorityAreaJob.status = status;
+      this.activePriorityAreaJob.error = error;
+      this.activePriorityAreaJob.endedAt = new Date().toISOString();
+    }
+    this.activePriorityAreaJob = null;
+    for (const jobId of this.priorityAreaJobIds.splice(0)) {
+      const job = this.areaJobs.get(jobId);
+      if (!job || job.status !== "queued") continue;
+      job.status = status;
+      job.error = error;
+      job.endedAt = new Date().toISOString();
+    }
+  }
+
+  startAreaJob(areaId) {
+    const area = TEHRAN_FOCUS_AREAS.find((item) => Number(item.id) === Number(areaId));
+    if (!area) return { started: false, reason: "area-not-found" };
+    if (this.currentPromise) {
+      if (this.currentRunKind === "targeted-area" && Number(this.currentAreaJob?.area?.id) === Number(area.id)) {
+        return { started: false, deduplicated: true, reason: "area-job-already-running", job: this.areaJobSnapshot() };
+      }
+      const pending = [...this.areaJobs.values()].find((job) => (
+        Number(job.area?.id) === Number(area.id)
+        && ["queued", "discovering", "processing"].includes(job.status)
+      ));
+      if (pending) {
+        return { started: false, queued: pending.status === "queued", deduplicated: true, reason: "area-job-already-running", job: this.areaJobSnapshot(pending) };
+      }
+      if (this.currentRunKind === "full") {
+        if (this.priorityAreaJobIds.length >= (this.config.crawl.targetedQueueLimit || 10)) {
+          return { started: false, reason: "area-job-queue-full", state: this.snapshot() };
+        }
+        const job = this.createAreaJob(area, "queued");
+        this.rememberAreaJob(job);
+        this.priorityAreaJobIds.push(job.jobId);
+        this.logger.info("crawl.area-job.prioritized", "Area job added to the active full crawl", {
+          jobId: job.jobId, area: job.area, queueDepth: this.priorityAreaJobIds.length,
+        });
+        return { started: false, queued: true, accepted: true, reason: "prioritized-in-full-crawl", job: this.areaJobSnapshot(job) };
+      }
+      return {
+        started: false,
+        reason: "crawler-busy",
+        state: this.snapshot(),
+        job: this.areaJobSnapshot(),
+      };
+    }
+    if (this.cooldownUntil && Date.now() < Date.parse(this.cooldownUntil)) {
+      return { started: false, reason: "platform-cooldown", cooldownUntil: this.cooldownUntil };
+    }
+    const recent = [...this.areaJobs.values()].reverse().find((job) => (
+      Number(job.area?.id) === Number(area.id)
+      && job.status === "completed"
+      && Date.now() - Date.parse(job.endedAt) < this.config.crawl.targetedCooldownMs
+    ));
+    if (recent) return {
+      started: false,
+      deduplicated: true,
+      reason: "area-job-cooldown",
+      retryAt: new Date(Date.parse(recent.endedAt) + this.config.crawl.targetedCooldownMs).toISOString(),
+      job: this.areaJobSnapshot(recent),
+    };
+
+    const job = this.createAreaJob(area);
+    this.currentAreaJob = job;
+    this.rememberAreaJob(job);
+    this.stopRequested = false;
+    this.currentRunKind = "targeted-area";
+    this.currentPromise = this.runTargetedArea(area, job)
+      .catch((error) => {
+        job.status = "failed";
+        job.error = error.message;
+        job.endedAt = new Date().toISOString();
+        this.logger.error("crawl.area-job.unhandled", "Targeted area job failed", {
+          jobId: job.jobId, area: job.area, error: error.stack || error.message,
+        });
+      })
+      .finally(() => {
+        this.currentPromise = null;
+        this.currentRunKind = null;
+        this.currentAreaJob = null;
+      });
+    return { started: true, job: this.areaJobSnapshot(job) };
   }
 
   async refetchListing(token) {
@@ -219,7 +359,7 @@ export class PublicCrawler {
     await scheduled;
   }
 
-  async createContext() {
+  async createPublicRequestContext() {
     // Keep detail API calls isolated from browser cookies and any authenticated
     // state that may exist elsewhere in this repository.
     const rawRequest = await playwrightRequest.newContext();
@@ -228,6 +368,10 @@ export class PublicCrawler {
       post: async (...args) => { await this.waitForPublicRequestSlot("api:post"); await this.requestBudget.acquire("api:post"); return rawRequest.post(...args); },
       dispose: () => rawRequest.dispose(),
     };
+  }
+
+  async createContext() {
+    await this.createPublicRequestContext();
     this.browser = await chromium.launch({ headless: this.config.browser.headless });
     this.context = await this.browser.newContext({
       viewport: { width: 1440, height: 900 },
@@ -372,8 +516,41 @@ export class PublicCrawler {
     });
     await this.persistState();
 
-    for (const partition of partitions) {
+    for (let partitionIndex = 0; partitionIndex < partitions.length; partitionIndex += 1) {
       if (this.stopRequested || listings.size >= this.config.crawl.maxListings) break;
+      const priorityJob = this.takePriorityAreaJob();
+      let priorityInjected = false;
+      if (priorityJob) {
+        const queuedIndex = partitions.findIndex((candidate, index) => (
+          index >= partitionIndex && Number(candidate.area?.id) === Number(priorityJob.area.id)
+        ));
+        if (queuedIndex >= partitionIndex) {
+          [partitions[partitionIndex], partitions[queuedIndex]] = [partitions[queuedIndex], partitions[partitionIndex]];
+        } else {
+          const area = TEHRAN_FOCUS_AREAS.find((candidate) => Number(candidate.id) === Number(priorityJob.area.id));
+          const targetedPartition = buildApartmentAreaQueue([area], {
+            listingsPerArea: this.config.crawl.targetedListingsPerArea,
+            focusAreas: [area],
+          })[0];
+          partitions.splice(partitionIndex, 0, targetedPartition);
+          this.state.areasTotal += 1;
+          priorityInjected = true;
+        }
+        priorityJob.status = "discovering";
+        priorityJob.startedAt = new Date().toISOString();
+        this.logger.info("crawl.area-job.promoted", "Prioritized area moved to the front of the active crawl", {
+          jobId: priorityJob.jobId,
+          area: priorityJob.area,
+          afterCompletedAreas: this.state.areasCompleted,
+        });
+      }
+      const partition = partitions[partitionIndex];
+      const priorityStart = priorityJob ? {
+        processed: this.state.processed,
+        successful: this.state.successful,
+        failed: this.state.failed,
+        newListings: this.state.newListings,
+      } : null;
       this.state.partition = partition.category;
       this.state.area = partition.area;
       await this.persistState();
@@ -472,8 +649,16 @@ export class PublicCrawler {
           this.logger.error("crawl.discovery.partition.deferred", "Area discovery failed and was queued for recovery", {
             area: partition.area, apiError: apiError.message, htmlError: htmlError.message,
           });
-          this.planning.nextAreaOffset = basePartitions.length
-            ? (this.planning.nextAreaOffset + 1) % basePartitions.length : 0;
+          if (!priorityInjected) {
+            this.planning.nextAreaOffset = basePartitions.length
+              ? (this.planning.nextAreaOffset + 1) % basePartitions.length : 0;
+          }
+          if (priorityJob) {
+            priorityJob.status = "failed";
+            priorityJob.error = "Area discovery failed";
+            priorityJob.endedAt = new Date().toISOString();
+            this.activePriorityAreaJob = null;
+          }
           await this.persistState();
           continue;
         }
@@ -494,8 +679,10 @@ export class PublicCrawler {
       this.state.discovered = listings.size;
       this.state.queued += newlyDiscovered.length;
       this.state.areasCompleted += 1;
-      this.planning.nextAreaOffset = basePartitions.length
-        ? (this.planning.nextAreaOffset + 1) % basePartitions.length : 0;
+      if (!priorityInjected) {
+        this.planning.nextAreaOffset = basePartitions.length
+          ? (this.planning.nextAreaOffset + 1) % basePartitions.length : 0;
+      }
       this.logger.info("crawl.discovery.partition.complete", "Public search partition completed", {
         runId: this.state.runId,
         category: partition.category,
@@ -510,7 +697,21 @@ export class PublicCrawler {
         areasTotal: this.state.areasTotal,
       });
       await this.persistState();
+      if (priorityJob) {
+        priorityJob.discovered = discovered.length;
+        priorityJob.status = "processing";
+      }
       if (newlyDiscovered.length && !this.stopRequested) await onDiscovered(newlyDiscovered);
+      if (priorityJob) {
+        priorityJob.processed = this.state.processed - priorityStart.processed;
+        priorityJob.successful = this.state.successful - priorityStart.successful;
+        priorityJob.failed = this.state.failed - priorityStart.failed;
+        priorityJob.newListings = this.state.newListings - priorityStart.newListings;
+        priorityJob.status = this.stopRequested ? "stopped" : "completed";
+        priorityJob.endedAt = new Date().toISOString();
+        this.activePriorityAreaJob = null;
+        this.logger.info("crawl.area-job.complete", "Prioritized area completed inside the full crawl", this.areaJobSnapshot(priorityJob));
+      }
     }
     for (const item of failedPartitions.slice(0, this.config.crawl.recoveryMaxItems)) {
       if (this.stopRequested || listings.size >= this.config.crawl.maxListings) break;
@@ -566,7 +767,7 @@ export class PublicCrawler {
     return { listings: [...listings.values()], diagnostics };
   }
 
-  async processListing(page, discovered, workerId, { recovery = false } = {}) {
+  async processListing(page, discovered, workerId, { recovery = false, apiOnly = false } = {}) {
     this.state.lastListingToken = discovered.token;
     const startedAt = Date.now();
     this.logger.info("crawl.listing.start", "Processing public listing", {
@@ -603,6 +804,7 @@ export class PublicCrawler {
           `detail:${token}`,
           () => fetchPublicPostDocument(requestContext, token),
         ),
+        allowHtmlFallback: !apiOnly,
       });
       const partitionValidation = validateListingPartition(listing, discovered);
       if (!partitionValidation.matches) {
@@ -621,7 +823,6 @@ export class PublicCrawler {
       if (scoringReady) this.state.scoringReady += 1;
       else this.state.historyOnly += 1;
       if (result.changed) this.state.changed += 1;
-      if (result.changed) this.liveScoring?.requestUpdate(result.existed ? "listing-refreshed" : "listing-added");
       this.logger.info("crawl.listing.success", "Public listing stored and analyzed", {
         runId: this.state.runId,
         workerId,
@@ -666,26 +867,26 @@ export class PublicCrawler {
     }
   }
 
-  async processDetails(listings, { append = false } = {}) {
+  async processDetails(listings, { append = false, concurrency = this.config.crawl.detailConcurrency, apiOnly = false } = {}) {
     if (!append) this.state.queued = listings.length;
     await this.persistState();
     let cursor = 0;
     const recoveryQueue = [];
-    const workerCount = Math.min(this.config.crawl.detailConcurrency, listings.length);
+    const workerCount = Math.min(concurrency, listings.length);
     const runWorker = async (workerId) => {
-      const page = await this.context.newPage();
+      const page = apiOnly ? null : await this.context.newPage();
       try {
         while (!this.stopRequested) {
           const index = cursor;
           cursor += 1;
           if (index >= listings.length) break;
-          const result = await this.processListing(page, listings[index], workerId);
+          const result = await this.processListing(page, listings[index], workerId, { apiOnly });
           if (!result.success && ![403, 429].includes(result.error?.status)) {
             recoveryQueue.push(listings[index]);
           }
         }
       } finally {
-        await page.close().catch(() => {});
+        await page?.close().catch(() => {});
       }
     };
     await Promise.all(Array.from({ length: workerCount }, (_, index) => runWorker(index + 1)));
@@ -696,19 +897,142 @@ export class PublicCrawler {
       this.logger.info("crawl.recovery.start", "Retrying failed public listing details", {
         attempt, count: batch.length,
       });
-      const page = await this.context.newPage();
+      const page = apiOnly ? null : await this.context.newPage();
       try {
         for (const listing of batch) {
           if (this.stopRequested) break;
-          const result = await this.processListing(page, listing, "recovery", { recovery: true });
+          const result = await this.processListing(page, listing, "recovery", { recovery: true, apiOnly });
           if (result.success) {
             this.state.recovered += 1;
             this.state.failed = Math.max(0, this.state.failed - 1);
           } else if (![403, 429].includes(result.error?.status)) recoveryQueue.push(listing);
         }
       } finally {
-        await page.close().catch(() => {});
+        await page?.close().catch(() => {});
       }
+    }
+  }
+
+  async runTargetedArea(area, job) {
+    const limit = this.config.crawl.targetedListingsPerArea;
+    this.requestBudget = new RequestBudget({
+      maxPerRun: this.config.crawl.targetedMaxRequests,
+      maxPerMinute: this.config.crawl.maxRequestsPerMinute,
+    });
+    const partition = buildApartmentAreaQueue([area], {
+      listingsPerArea: limit,
+      focusAreas: [area],
+    })[0];
+    this.state = {
+      ...this.state,
+      status: "starting",
+      runId: job.jobId,
+      startedAt: new Date().toISOString(),
+      endedAt: null,
+      partition: partition.category,
+      area: partition.area,
+      areasTotal: 1,
+      areasCompleted: 0,
+      discovered: 0,
+      queued: 0,
+      processed: 0,
+      successful: 0,
+      failed: 0,
+      recovered: 0,
+      retries: 0,
+      skippedFresh: 0,
+      newListings: 0,
+      refreshedListings: 0,
+      scoringReady: 0,
+      historyOnly: 0,
+      lifecycle: {},
+      requestBudget: this.requestBudget.snapshot(),
+      completeness: { status: "running", areaCoverage: 0, detailCoverage: 0 },
+      cooldownUntil: null,
+      changed: 0,
+      contactEndpointAttempts: 0,
+      httpWarnings: {},
+      lastListingToken: null,
+      error: null,
+    };
+    job.startedAt = this.state.startedAt;
+    await this.persistState();
+    this.logger.info("crawl.area-job.start", "Targeted public area job started", {
+      jobId: job.jobId, area: job.area, limit,
+      maxRequests: this.config.crawl.targetedMaxRequests,
+      detailConcurrency: 1, browser: false,
+    });
+
+    try {
+      await this.createPublicRequestContext();
+      this.state.status = "discovering";
+      job.status = "discovering";
+      await this.persistState();
+      const result = await this.retryPublicOperation(`targeted-search:${area.slug}`, () =>
+        fetchApartmentAreaListings(this.publicPostRequest, partition.area, {
+          limit,
+          maxPages: this.config.crawl.maxSearchIterations,
+          maxStalls: this.config.crawl.maxSearchStalls,
+        }));
+      const listings = result.listings.map((listing) => ({
+        ...listing,
+        category: partition.category,
+        expectedSubcategory: partition.expectedSubcategory,
+        area: partition.area,
+      }));
+      this.state.discovered = listings.length;
+      this.state.queued = listings.length;
+      this.state.areasCompleted = 1;
+      job.discovered = listings.length;
+      this.state.status = "processing";
+      job.status = "processing";
+      await this.processDetails(listings, { concurrency: 1, apiOnly: true });
+      await this.store.flush();
+      const detailsComplete = this.state.processed === this.state.queued;
+      this.state.completeness = {
+        status: !this.stopRequested && detailsComplete && this.state.failed === 0 ? "complete" : "partial",
+        areaCoverage: 100,
+        detailCoverage: this.state.queued
+          ? Number((this.state.successful / this.state.queued * 100).toFixed(2)) : 100,
+        failedDetails: this.state.failed,
+        stopRequested: this.stopRequested,
+      };
+      this.state.status = this.stopRequested ? "stopped" : "completed";
+      job.status = this.state.status;
+    } catch (error) {
+      if (error.status === 429) {
+        const cooldownMs = Math.max(15 * 60_000, error.retryAfterMs || 0);
+        this.cooldownUntil = new Date(Date.now() + cooldownMs).toISOString();
+        this.state.cooldownUntil = this.cooldownUntil;
+      }
+      this.state.status = this.stopRequested && [403, 429].includes(error.status) ? "stopped" : "failed";
+      this.state.error = error.message;
+      this.state.completeness = {
+        status: this.state.status,
+        areaCoverage: this.state.areasCompleted ? 100 : 0,
+        detailCoverage: this.state.queued
+          ? Number((this.state.successful / this.state.queued * 100).toFixed(2)) : 0,
+        failedDetails: this.state.failed,
+        stopRequested: this.stopRequested,
+      };
+      job.status = this.state.status;
+      job.error = error.message;
+      this.logger.error("crawl.area-job.failure", "Targeted public area job failed", {
+        jobId: job.jobId, area: job.area, error: error.stack || error.message,
+      });
+    } finally {
+      this.state.endedAt = new Date().toISOString();
+      this.state.requestBudget = this.requestBudget?.snapshot() || {};
+      job.endedAt = this.state.endedAt;
+      job.processed = this.state.processed;
+      job.successful = this.state.successful;
+      job.failed = this.state.failed;
+      job.newListings = this.state.newListings;
+      await this.persistState();
+      await this.publicPostRequest?.dispose().catch(() => {});
+      this.publicPostRequest = null;
+      this.logger.info("crawl.area-job.complete", "Targeted public area job ended", this.areaJobSnapshot(job));
+      if (this.state.changed > 0) this.liveScoring?.requestUpdate("targeted-area-finished");
     }
   }
 
@@ -837,6 +1161,10 @@ export class PublicCrawler {
         error: error.stack || error.message,
       });
     } finally {
+      this.finishPendingPriorityJobs(
+        this.stopRequested ? "stopped" : "failed",
+        this.stopRequested ? "Full crawl stopped before the prioritized area ran" : "Full crawl ended before the prioritized area ran",
+      );
       this.state.endedAt = new Date().toISOString();
       this.state.requestBudget = this.requestBudget?.snapshot() || {};
       this.planning.areaOffset = this.planning.nextAreaOffset;
@@ -850,6 +1178,7 @@ export class PublicCrawler {
       this.publicPostRequest = null;
       this.browser = null;
       this.logger.info("crawl.run.complete", "Live public crawl ended", this.snapshot());
+      if (this.state.changed > 0) this.liveScoring?.requestUpdate("crawl-finished");
     }
   }
 

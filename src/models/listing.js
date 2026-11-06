@@ -96,6 +96,36 @@ listingSchema.index({ advertiserType: 1, "lifecycle.status": 1, lastSeenAt: -1 }
 listingSchema.index({ "crawlPartition.area.id": 1, subcategory: 1, lastSeenAt: -1 });
 listingSchema.index({ "coordinates.latitude": 1, "coordinates.longitude": 1 });
 listingSchema.index({ "nearbyPlaces.category": 1, "nearbyPlaces.distanceMeters": 1 });
+listingSchema.index({
+  "lifecycle.status": 1,
+  "quality.outcome": 1,
+  subcategory: 1,
+  neighborhood: 1,
+  "pricing.price": 1,
+}, { name: "buyer_match_location_price" });
+listingSchema.index({
+  "lifecycle.status": 1,
+  "quality.outcome": 1,
+  subcategory: 1,
+  neighborhood: 1,
+  "property.area": 1,
+  "property.rooms": 1,
+}, { name: "buyer_match_location_property" });
+listingSchema.index({
+  "lifecycle.status": 1,
+  "quality.outcome": 1,
+  subcategory: 1,
+  "pricing.deposit": 1,
+  "pricing.rent": 1,
+}, { name: "buyer_match_rent" });
+listingSchema.index({
+  "lifecycle.status": 1,
+  "quality.outcome": 1,
+  subcategory: 1,
+  neighborhood: 1,
+  lastSeenAt: -1,
+  token: 1,
+}, { name: "buyer_match_location_recent" });
 
 export const Listing = mongoose.models.Listing || mongoose.model("Listing", listingSchema);
 export default Listing;

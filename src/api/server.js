@@ -8,7 +8,9 @@ import { fetchNearbyPlaces } from "../services/neshanPlaces.js";
 import { buildDataQualityBaseline } from "./dataQuality.js";
 import { ScoringScenario } from "../models/scoringScenario.js";
 import { calculateSavedScenario, scenarioDocument } from "../scoring/scenarioService.js";
+import { BUYER_MATCH_AMENITIES, normalizeBuyerMatchRequest } from "../search/buyerMatcher.js";
 import { normalizeListingPage } from "../storage/listingPagination.js";
+import { OpenAIVoiceService } from "../services/openaiVoice.js";
 
 function sendJson(response, status, value) {
   const body = JSON.stringify(value, null, 2);
@@ -109,14 +111,30 @@ async function readJsonBody(request, maximumBytes = 1_000_000) {
   }
 }
 
+async function readBinaryBody(request, maximumBytes = 12_000_000) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > maximumBytes) throw Object.assign(new Error("Audio is too large"), { status: 413, code: "audio-too-large" });
+    chunks.push(chunk);
+  }
+  if (!size) throw Object.assign(new Error("Audio is required"), { status: 400, code: "audio-required" });
+  return Buffer.concat(chunks);
+}
+
 function matchesListingQuery(listing, url) {
   const value = (name) => url.searchParams.get(name);
   const numeric = (name) => {
     const number = Number(value(name));
     return value(name) !== null && Number.isFinite(number) ? number : null;
   };
-  const district = value("district");
-  if (district && district !== "all" && listing.neighborhood !== district && listing.district !== district) return false;
+  const districts = url.searchParams.getAll("district").filter((item) => item && item !== "all");
+  if (districts.length && !districts.some((district) => listing.neighborhood === district
+    || listing.district === district
+    || listing.crawlPartition?.area?.name === district
+    || listing.crawlPartition?.area?.slug === district
+    || listing.crawlPartition?.area?.municipalDistricts?.includes(Number(district)))) return false;
   const category = value("category");
   if (category && category !== "all" && listing.subcategory !== category && listing.crawlPartition?.category !== category) return false;
   const advertiser = value("advertiserType");
@@ -140,6 +158,27 @@ function matchesListingQuery(listing, url) {
   return true;
 }
 
+function matchesScoreQuery(score, url, { scenario = false } = {}) {
+  const numeric = (name) => {
+    const raw = url.searchParams.get(name);
+    const number = Number(raw);
+    return raw !== null && Number.isFinite(number) ? number : null;
+  };
+  const recommendation = scenario ? score?.scenario?.recommendation : score?.scores?.recommendation;
+  const band = scenario ? score?.scenario?.band : score?.scores?.band;
+  const minimum = numeric("minScore");
+  const maximum = numeric("maxScore");
+  if (minimum !== null && recommendation < minimum) return false;
+  if (maximum !== null && recommendation > maximum) return false;
+  const requestedBand = url.searchParams.get("scoreBand");
+  if (requestedBand && requestedBand !== "all" && band !== requestedBand) return false;
+  const minimumConfidence = numeric("minConfidence");
+  if (minimumConfidence !== null && score?.scores?.confidence < minimumConfidence) return false;
+  const maximumRisk = numeric("maxRisk");
+  if (maximumRisk !== null && score?.scores?.risk > maximumRisk) return false;
+  return true;
+}
+
 function plainScenario(document) {
   const value = typeof document?.toObject === "function" ? document.toObject({ flattenMaps: true }) : document;
   const { _id, ...scenario } = JSON.parse(JSON.stringify(value));
@@ -159,10 +198,16 @@ function externalListing(listing) {
   };
 }
 
-export function createAnalyticsServer({ config, store, analytics, crawler, logger }) {
+export const _catalogFilterHelpers = { matchesListingQuery, matchesScoreQuery };
+
+export function createAnalyticsServer({ config, store, analytics, crawler, logger, resourceMonitor = null }) {
   let recommendationAnalysisCache = { key: null, value: new Map() };
+  let activeBuyerSearches = 0;
   const readScoredSnapshot = createCachedJsonReader(config.paths.scoredListings, null);
-  const readScoredDocument = async () => {
+  const scoredDocumentCache = { value: null, expiresAt: 0, pending: null };
+  const scenarioCalculationCache = new Map();
+  const openaiVoice = new OpenAIVoiceService({ apiKey: config.openaiApiKey, options: config.openai });
+  const loadScoredDocument = async () => {
     if (typeof store.latestScoredListings === "function") {
       const latest = await store.latestScoredListings();
       if (latest.listings.length) return {
@@ -177,6 +222,41 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
       };
     }
     return readScoredSnapshot();
+  };
+  const readScoredDocument = async () => {
+    const now = Date.now();
+    if (scoredDocumentCache.value && scoredDocumentCache.expiresAt > now) {
+      return scoredDocumentCache.value;
+    }
+    if (scoredDocumentCache.pending) return scoredDocumentCache.pending;
+    scoredDocumentCache.pending = loadScoredDocument()
+      .then((value) => {
+        scoredDocumentCache.value = value;
+        scoredDocumentCache.expiresAt = Date.now() + 15_000;
+        return value;
+      })
+      .finally(() => {
+        scoredDocumentCache.pending = null;
+      });
+    return scoredDocumentCache.pending;
+  };
+  const calculateScenario = (scoredDocument, stored) => {
+    const scenario = plainScenario(stored);
+    const scoreVersion = [
+      scoredDocument?.source?.modelId,
+      scoredDocument?.scoringVersion,
+      scoredDocument?.generatedAt,
+      scoredDocument?.listings?.length,
+    ].join(":");
+    const scenarioVersion = stored?.updatedAt || stored?.createdAt || scenario.updatedAt || "unversioned";
+    const key = `${scenario.scenarioId}:${scenarioVersion}:${scoreVersion}`;
+    if (scenarioCalculationCache.has(key)) return scenarioCalculationCache.get(key);
+    const calculated = calculateSavedScenario(scoredDocument, scenario);
+    scenarioCalculationCache.set(key, calculated);
+    while (scenarioCalculationCache.size > 24) {
+      scenarioCalculationCache.delete(scenarioCalculationCache.keys().next().value);
+    }
+    return calculated;
   };
   const server = http.createServer(async (request, response) => {
     const startedAt = Date.now();
@@ -200,6 +280,7 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
           service: "owj-market-analytics",
           mode: config.mongoUri ? "public-only-mongodb" : "public-only-json",
           time: new Date().toISOString(),
+          process: resourceMonitor?.snapshot() || null,
           listingCount: store.getListings().length,
           crawl: crawler.snapshot(),
           guardrails: {
@@ -230,6 +311,131 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
       if (request.method === "GET" && url.pathname === "/listing-facets") {
         const facets = typeof store.listingFacets === "function" ? await store.listingFacets() : { districts: [], categories: [], bounds: {} };
         return sendJson(response, 200, facets);
+      }
+
+      if (request.method === "GET" && url.pathname === "/ai/voice/status") {
+        return sendJson(response, 200, {
+          enabled: openaiVoice.enabled,
+          transcriptionModel: openaiVoice.enabled ? config.openai?.transcriptionModel : null,
+          filterModel: openaiVoice.enabled ? config.openai?.filterModel : null,
+          speechModel: openaiVoice.enabled ? config.openai?.realtimeModel : null,
+        });
+      }
+
+      if (request.method === "POST" && url.pathname === "/ai/voice/catalog-filters") {
+        const mimeType = String(request.headers["content-type"] || "").split(";")[0].trim().toLowerCase();
+        if (!new Set(["audio/webm", "audio/ogg", "audio/mp4", "audio/mpeg", "audio/wav", "audio/x-wav"]).has(mimeType)) {
+          throw Object.assign(new Error("Unsupported audio format"), { status: 415, code: "unsupported-audio" });
+        }
+        const audio = await readBinaryBody(request);
+        const [facets, scenarios] = await Promise.all([
+          typeof store.listingFacets === "function"
+            ? store.listingFacets() : Promise.resolve({ districts: [], categories: [] }),
+          config.mongoUri
+            ? ScoringScenario.find({ active: true }).select({ _id: 0, scenarioId: 1, name: 1 }).lean()
+            : Promise.resolve([]),
+        ]);
+        const result = await openaiVoice.voiceToFilters(audio, {
+          mimeType,
+          districts: facets.districts || [],
+          categories: facets.categories || [],
+          scenarios,
+        });
+        logger.info("openai.voice.catalog-filters", "Voice catalog filters created", {
+          requestId,
+          audioBytes: audio.length,
+          transcriptCharacters: result.transcript.length,
+          districtCount: result.filters.districts.length,
+          scenarioSelected: Boolean(result.filters.scenarioId),
+        });
+        return sendJson(response, 200, result);
+      }
+
+      if (request.method === "POST" && url.pathname === "/ai/voice/speech") {
+        const body = await readJsonBody(request, 8_000);
+        const text = typeof body.text === "string" ? body.text.trim() : "";
+        if (!text || text.length > 800) {
+          throw Object.assign(new Error("Speech text must contain 1 to 800 characters"), { status: 400, code: "invalid-speech-text" });
+        }
+        const audio = await openaiVoice.synthesize(text);
+        response.writeHead(200, {
+          "Content-Type": "audio/wav",
+          "Content-Length": audio.length,
+          "Cache-Control": "no-store",
+          "X-Audio-Generated-By": "OpenAI",
+        });
+        response.end(audio);
+        return;
+      }
+
+      if (request.method === "GET" && url.pathname === "/buyer-matches/options") {
+        const facets = typeof store.listingFacets === "function"
+          ? await store.listingFacets() : { districts: [], categories: [], bounds: {} };
+        return sendJson(response, 200, {
+          schemaVersion: "1.0.0",
+          transactionTypes: ["buy", "rent"],
+          propertyTypes: facets.categories,
+          locations: facets.districts,
+          amenities: BUYER_MATCH_AMENITIES,
+          bounds: facets.bounds,
+        });
+      }
+
+      if (request.method === "POST" && url.pathname === "/buyer-matches/search") {
+        if (typeof store.matchBuyerRequirement !== "function") {
+          return sendJson(response, 503, { error: "mongodb-required" });
+        }
+        const maximumConcurrent = config.search?.maxConcurrent || 4;
+        if (activeBuyerSearches >= maximumConcurrent) {
+          response.setHeader("Retry-After", "2");
+          return sendJson(response, 503, { error: "buyer-search-busy", message: "Search capacity is busy; retry shortly." });
+        }
+        activeBuyerSearches += 1;
+        const searchStartedAt = Date.now();
+        try {
+          const body = await readJsonBody(request, 64_000);
+          const requirement = normalizeBuyerMatchRequest(body.requirement || body);
+          const limit = numberParam(body.page?.limit, 30, 1, 50);
+          const result = await store.matchBuyerRequirement(requirement, {
+            limit,
+            cursor: body.page?.cursor || null,
+            candidateLimit: config.search?.maxCandidates || 500,
+            queryMaxTimeMs: config.search?.queryMaxTimeMs || 2_000,
+          });
+          logger.info("buyer-match.search", "Buyer requirement search completed", {
+            requestId, elapsedMs: Date.now() - searchStartedAt,
+            total: result.total, evaluated: result.evaluated, returned: result.matches.length,
+            truncated: result.truncated, transactionType: requirement.transactionType,
+            locationCount: requirement.locations.length,
+            requiredAmenityCount: requirement.requiredAmenities.length,
+          });
+          return sendJson(response, 200, {
+          schemaVersion: "1.0.0",
+          generatedAt: new Date().toISOString(),
+          requirement,
+          total: result.total,
+          evaluated: result.evaluated,
+          truncated: result.truncated,
+          nextCursor: result.nextCursor,
+          model: result.model,
+            matches: result.matches.map((row) => ({
+            matchScore: row.matchScore,
+            components: row.components,
+            reasons: row.reasons,
+            marketScore: row.market ? {
+              rank: row.market.rank,
+              recommendation: row.market.recommendation,
+              confidence: row.market.confidence,
+              propertyQuality: row.market.propertyQuality,
+              risk: row.market.risk,
+              band: row.market.band,
+            } : null,
+            listing: externalListing(row.listing),
+            })),
+          });
+        } finally {
+          activeBuyerSearches -= 1;
+        }
       }
 
       const isDataQualityRequest = url.pathname === "/data-quality-data" || (
@@ -346,7 +552,10 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
         if (!document?.listings) {
           return sendJson(response, 404, { error: "scores-not-generated" });
         }
-        const detail = buildScoreDetail(document, scoreDetailMatch[1]);
+        const fullListing = typeof store.scoredListingSnapshot === "function"
+          ? await store.scoredListingSnapshot(scoreDetailMatch[1], { modelId: document.source?.modelId })
+          : null;
+        const detail = buildScoreDetail(document, scoreDetailMatch[1], fullListing);
         return detail
           ? sendJson(response, 200, detail)
           : sendJson(response, 404, { error: "scored-listing-not-found", token: scoreDetailMatch[1] });
@@ -448,14 +657,15 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
         ]);
         if (!stored) return sendJson(response, 404, { error: "scenario-not-found" });
         if (!scoredDocument?.listings) return sendJson(response, 404, { error: "scores-not-generated" });
-        const calculated = calculateSavedScenario(scoredDocument, plainScenario(stored));
+        const calculated = calculateScenario(scoredDocument, stored);
         const { offset, limit } = normalizeListingPage({
           offset: url.searchParams.get("offset") ?? undefined,
           limit: url.searchParams.get("limit") ?? undefined,
         });
         const rows = calculated.rows.flatMap((row) => {
           const listing = store.getListing(row.token);
-          if (!listing || !matchesListingQuery(listing, url)) return [];
+          if (!listing || !matchesListingQuery(listing, url)
+            || !matchesScoreQuery(row, url, { scenario: true })) return [];
           return [{
             ...externalListing(listing),
             scenarioScore: {
@@ -482,7 +692,7 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
         if (!scoredDocument?.listings) return sendJson(response, 404, { error: "scores-not-generated" });
         const scenarios = await ScoringScenario.find({ active: true }).sort({ updatedAt: -1 }).lean({ flattenMaps: true });
         const scores = scenarios.flatMap((stored) => {
-          const calculated = calculateSavedScenario(scoredDocument, plainScenario(stored));
+          const calculated = calculateScenario(scoredDocument, stored);
           const row = calculated.rows.find((item) => item.token === listingScenarioScoresMatch[1]);
           return row ? [{
             scenarioId: calculated.scenarioId, name: calculated.name,
@@ -503,13 +713,41 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
       }
 
       if (request.method === "POST" && url.pathname === "/crawl") {
-        const result = crawler.start();
+        const result = await Promise.resolve(crawler.start());
         status = result.started ? 202 : 409;
         return sendJson(response, status, result);
       }
 
       if (request.method === "GET" && url.pathname === "/crawl") {
         return sendJson(response, 200, crawler.snapshot());
+      }
+
+      if (request.method === "POST" && url.pathname === "/area-crawl-jobs") {
+        const body = await readJsonBody(request, 2_000);
+        const areaId = Number(body.areaId);
+        if (!Number.isInteger(areaId)) {
+          return sendJson(response, 400, { error: "invalid-area-id" });
+        }
+        const result = await Promise.resolve(crawler.startAreaJob(areaId));
+        const statusByReason = {
+          "area-not-found": 404,
+          "full-crawl-running": 409,
+          "crawler-busy": 409,
+          "platform-cooldown": 429,
+          "area-job-cooldown": 429,
+        };
+        const statusCode = result.started || result.accepted ? 202
+          : result.deduplicated && result.reason === "area-job-already-running" ? 200
+            : statusByReason[result.reason] || 409;
+        return sendJson(response, statusCode, result);
+      }
+
+      const areaJobMatch = url.pathname.match(/^\/area-crawl-jobs\/([A-Za-z0-9-]+)$/);
+      if (request.method === "GET" && areaJobMatch) {
+        const job = await Promise.resolve(crawler.getAreaJob(areaJobMatch[1]));
+        return job
+          ? sendJson(response, 200, { job })
+          : sendJson(response, 404, { error: "area-job-not-found" });
       }
 
       if (request.method === "GET" && url.pathname === "/crawl-runs") {
@@ -523,7 +761,7 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
           offset: url.searchParams.get("offset") ?? undefined,
           limit: url.searchParams.get("limit") ?? undefined,
         });
-        const district = url.searchParams.get("district");
+        const districts = url.searchParams.getAll("district").filter((value) => value && value !== "all");
         const area = url.searchParams.get("area");
         const category = url.searchParams.get("category");
         const advertiserType = url.searchParams.get("advertiserType");
@@ -533,9 +771,11 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
         const numeric = (name) => { const value = Number(url.searchParams.get(name)); return Number.isFinite(value) && url.searchParams.has(name) ? value : undefined; };
         const amenities = url.searchParams.getAll("amenity").filter((value) => /^[a-zA-Z]+$/.test(value));
         if (typeof store.queryListings === "function") {
-          const result = await store.queryListings({ offset, limit, district, area, category, advertiserType, query, readiness, status: lifecycleStatus,
+          const result = await store.queryListings({ offset, limit, districts, area, category, advertiserType, query, readiness, status: lifecycleStatus,
             minPrice: numeric("minPrice"), maxPrice: numeric("maxPrice"), minPricePerMeter: numeric("minPricePerMeter"), maxPricePerMeter: numeric("maxPricePerMeter"),
-            minArea: numeric("minArea"), maxArea: numeric("maxArea"), minRooms: numeric("minRooms"), minYear: numeric("minYear"), amenities });
+            minArea: numeric("minArea"), maxArea: numeric("maxArea"), minRooms: numeric("minRooms"), minYear: numeric("minYear"), amenities,
+            minScore: numeric("minScore"), maxScore: numeric("maxScore"), minConfidence: numeric("minConfidence"), maxRisk: numeric("maxRisk"),
+            scoreBand: url.searchParams.get("scoreBand") || undefined });
           return sendJson(response, 200, {
             schemaVersion: "1.0.0", generatedAt: new Date().toISOString(), total: result.total,
             offset, limit, hasMore: offset + result.listings.length < result.total,
@@ -543,10 +783,10 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
           });
         }
         const all = store.getListings().filter((listing) => {
-          const matchesDistrict = !district ||
-            listing.district === district ||
-            listing.neighborhood === district ||
-            listing.crawlPartition?.area?.municipalDistricts?.includes(Number(district));
+          const matchesDistrict = !districts.length || districts.some((district) =>
+            listing.district === district || listing.neighborhood === district ||
+            listing.crawlPartition?.area?.name === district || listing.crawlPartition?.area?.slug === district ||
+            listing.crawlPartition?.area?.municipalDistricts?.includes(Number(district)));
           const partitionArea = listing.crawlPartition?.area;
           const matchesArea = !area || [partitionArea?.slug, partitionArea?.name, String(partitionArea?.id)]
             .filter(Boolean)
@@ -692,11 +932,17 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
         return sendJson(response, 200, schema);
       }
 
+      if (request.method === "GET" && url.pathname === "/schemas/buyer-match-request") {
+        const schema = JSON.parse(await readFile(new URL("../../schemas/buyer-match-request.schema.json", import.meta.url), "utf8"));
+        return sendJson(response, 200, schema);
+      }
+
       const isDashboardRoute = url.pathname === "/" ||
         url.pathname === "/score-analytics" ||
         url.pathname === "/score-workshop" ||
         url.pathname === "/data-quality" ||
         url.pathname === "/catalog" ||
+        url.pathname === "/buyer-matching" ||
         /^\/explore(?:\/[a-z0-9-]+)?$/i.test(url.pathname) ||
         /^\/listing\/[A-Za-z0-9_-]+$/.test(url.pathname);
       if (request.method === "GET" && isDashboardRoute) {
@@ -734,9 +980,16 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
           "GET /score-details/:token",
           "GET /score-analytics-data",
           "GET /score-workshop-data",
+          "GET /buyer-matches/options",
+          "POST /buyer-matches/search",
+          "GET /ai/voice/status",
+          "POST /ai/voice/catalog-filters",
+          "POST /ai/voice/speech",
           "GET /scoring-report",
           "POST /crawl",
           "GET /crawl",
+          "POST /area-crawl-jobs",
+          "GET /area-crawl-jobs/:jobId",
           "GET /crawl-runs",
           "GET /listings",
           "GET /listings/:token/analysis",
@@ -757,10 +1010,10 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
         path: url.pathname,
         error: error.stack || error.message,
       });
-      const errorStatus = Number.isInteger(error.status) && error.status >= 400 && error.status < 500
+      const errorStatus = Number.isInteger(error.status) && error.status >= 400 && error.status < 600
         ? error.status : 500;
       return sendJson(response, errorStatus, {
-        error: errorStatus === 500 ? "internal-error" : "invalid-request",
+        error: errorStatus === 500 ? "internal-error" : error.code || "invalid-request",
         message: errorStatus === 500 ? undefined : error.message,
         requestId,
       });

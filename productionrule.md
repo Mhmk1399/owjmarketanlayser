@@ -66,7 +66,7 @@ Build **one connected Owj platform**, not one tightly coupled application. Favor
 ## 4. Analytics public-data privacy — non-negotiable
 
 - Collect only from **unauthenticated public Divar endpoints** explicitly allowed by the project's public extraction design; do not call contact/chat endpoints or access authenticated information.
-- **Never retain**: phone numbers, contact objects, advertiser/agency names or identities, credentials, access tokens, cookies, authenticated responses, or contact/chat actions from Divar.
+- **Never retain**: phone numbers, contact objects, private advertiser identities, credentials, access tokens, cookies, authenticated responses, or contact/chat actions from Divar. A business display name may be retained only when it is explicitly rendered in the same unauthenticated public listing payload and passes the Analytics allowlist; it must never be recovered from contact or authenticated endpoints.
 - Sanitize descriptions **before** persistence; use the explicit extraction attribute allowlist. Apply the same controls to error logs, traces, queue payloads, test fixtures, exports, caches, and backups.
 - Store only safe image metadata as permitted by the analytics schema; do not ingest personal identifiers through fallback extraction.
 - Respect access restrictions and reasonable request rates; do not evade protective controls. Throttle and stop on repeated errors or access-policy signals.

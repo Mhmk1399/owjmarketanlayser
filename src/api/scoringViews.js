@@ -11,8 +11,9 @@ function average(values) {
   return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
 }
 
-export function buildScoreDetail(document, token) {
-  const listing = document?.listings?.find((item) => item.token === token);
+export function buildScoreDetail(document, token, fullListing = null) {
+  const compactListing = document?.listings?.find((item) => item.token === token);
+  const listing = fullListing || compactListing;
   if (!listing) return null;
   const total = document.listings.length;
   return {

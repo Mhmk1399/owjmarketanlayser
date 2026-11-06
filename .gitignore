@@ -1,5 +1,18 @@
 .env
+.env.production.shared
+.env.production.api
+.env.deploy
+node_modules/
 data/*
 logs/*
 !data/.gitkeep
 !logs/.gitkeep
+
+# Offline Docker deployment artifacts are transferred directly to servers,
+# never committed to GitHub.
+owj-market-analytics-*.tar.gz*
+owj-market-analytics-*.tar.gz.image
+
+# Server snapshots used for deployment validation.
+deploy/server-nginx.conf
+deploy/server-web-compose.yml

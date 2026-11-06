@@ -5,14 +5,19 @@ import { ListingObservation } from "../models/listingObservation.js";
 import { CrawlRun, ServiceState } from "../models/crawlState.js";
 import { ScoringScenario } from "../models/scoringScenario.js";
 import { DriftMetric, ListingScore, ModelVersion, TrainingRun } from "../models/scoringState.js";
-import { JsonMarketStore, _jsonHelpers } from "./jsonStore.js";
+import { BuyerRequirement } from "../models/buyerRequirement.js";
+import { JsonMarketStore } from "./jsonStore.js";
 import { nextLifecycleStatus } from "../collector/listingPolicy.js";
-<<<<<<< HEAD
 import { withMongoRetry } from "./mongoRetry.js";
 import { persistScoringGeneration, promoteModel, rollbackModel } from "../scoring/modelRegistry.js";
-=======
 import { normalizeListingPage } from "./listingPagination.js";
->>>>>>> 5a8833d267be7333f16cd007685209df638b2579
+import {
+  buildBuyerMongoFilter,
+  criteriaFingerprint,
+  decodeMatchCursor,
+  encodeMatchCursor,
+  rankBuyerCandidates,
+} from "../search/buyerMatcher.js";
 
 function plain(value) {
   return JSON.parse(JSON.stringify(value));
@@ -26,7 +31,10 @@ export class MongoMarketStore extends JsonMarketStore {
     scoringScenarioModel = ScoringScenario,
     modelVersionModel = ModelVersion, trainingRunModel = TrainingRun,
     listingScoreModel = ListingScore, driftMetricModel = DriftMetric,
+    buyerRequirementModel = BuyerRequirement,
     mongoRetry = {},
+    mongoAutoIndex = false,
+    reconcileCrawlerState = true,
   } = {}) {
     super(paths, logger, { snapshotEvery });
     this.mongoUri = mongoUri;
@@ -40,7 +48,10 @@ export class MongoMarketStore extends JsonMarketStore {
     this.trainingRunModel = trainingRunModel;
     this.listingScoreModel = listingScoreModel;
     this.driftMetricModel = driftMetricModel;
+    this.buyerRequirementModel = buyerRequirementModel;
     this.mongoRetry = mongoRetry;
+    this.mongoAutoIndex = mongoAutoIndex;
+    this.reconcileCrawlerState = reconcileCrawlerState;
     this.mongo = null;
   }
 
@@ -60,6 +71,7 @@ export class MongoMarketStore extends JsonMarketStore {
     if (!this.mongoUri) throw new Error("MongoMarketStore requires MONGODB_URI");
     this.mongo = await this.mongoOperation("connect", () => mongoose.connect(this.mongoUri, {
       dbName: this.mongoDbName,
+      autoIndex: this.mongoAutoIndex,
       serverSelectionTimeoutMS: 30_000,
       maxPoolSize: 20,
       minPoolSize: 2,
@@ -70,6 +82,7 @@ export class MongoMarketStore extends JsonMarketStore {
       this.scoringScenarioModel.init(),
       this.modelVersionModel.init(), this.trainingRunModel.init(),
       this.listingScoreModel.init(), this.driftMetricModel.init(),
+      this.buyerRequirementModel.init(),
     ]);
     const documents = await this.listingModel.find({}).batchSize(1000).lean();
     this.listings.clear();
@@ -77,7 +90,7 @@ export class MongoMarketStore extends JsonMarketStore {
       const listing = plain(document);
       this.listings.set(listing.token, listing);
     }
-    await this.reconcileInterruptedRun();
+    if (this.reconcileCrawlerState) await this.reconcileInterruptedRun();
     this.logger.info("store.mongo.ready", "MongoDB is the authoritative listing store", {
       listingCount: this.listings.size,
       database: mongoose.connection.name,
@@ -85,7 +98,6 @@ export class MongoMarketStore extends JsonMarketStore {
     });
   }
 
-<<<<<<< HEAD
   async reconcileInterruptedRun() {
     const document = await this.serviceStateModel.findOne({ key: "crawler" }).lean();
     if (!document || !["starting", "discovering", "processing"].includes(document.crawl?.status)) return null;
@@ -115,15 +127,19 @@ export class MongoMarketStore extends JsonMarketStore {
     return state;
   }
 
-  async queryListings({ offset = 0, limit = 50, district, area, category, advertiserType, query, readiness, status, minPrice, maxPrice, minPricePerMeter, maxPricePerMeter, minArea, maxArea, minRooms, minYear, amenities = [] } = {}) {
-=======
-  async queryListings({ offset, limit, district, area, category, advertiserType, query, readiness, status, minPrice, maxPrice, minPricePerMeter, maxPricePerMeter, minArea, maxArea, minRooms, minYear, amenities = [] } = {}) {
+  async queryListings({ offset, limit, districts = [], area, category, advertiserType, query, readiness, status, minPrice, maxPrice, minPricePerMeter, maxPricePerMeter, minArea, maxArea, minRooms, minYear, amenities = [], minScore, maxScore, minConfidence, maxRisk, scoreBand } = {}) {
     ({ offset, limit } = normalizeListingPage({ offset, limit }));
->>>>>>> 5a8833d267be7333f16cd007685209df638b2579
     const filters = [];
-    if (district) filters.push({ $or: [
-      { district }, { neighborhood: district },
-      ...(Number.isFinite(Number(district)) ? [{ "crawlPartition.area.municipalDistricts": Number(district) }] : []),
+    const selectedDistricts = [...new Set((districts || []).filter(Boolean))].slice(0, 30);
+    if (selectedDistricts.length) filters.push({ $or: [
+      { district: { $in: selectedDistricts } },
+      { neighborhood: { $in: selectedDistricts } },
+      { "crawlPartition.area.name": { $in: selectedDistricts } },
+      { "crawlPartition.area.slug": { $in: selectedDistricts } },
+      ...(() => {
+        const numbers = selectedDistricts.map(Number).filter(Number.isFinite);
+        return numbers.length ? [{ "crawlPartition.area.municipalDistricts": { $in: numbers } }] : [];
+      })(),
     ] });
     if (area) filters.push({ $or: [
       { "crawlPartition.area.slug": area }, { "crawlPartition.area.name": area },
@@ -150,12 +166,39 @@ export class MongoMarketStore extends JsonMarketStore {
     range("property.rooms", minRooms, undefined);
     range("property.constructionYear", minYear, undefined);
     for (const amenity of amenities) filters.push({ [`amenities.${amenity}`]: true });
+    const hasScoreFilter = [minScore, maxScore, minConfidence, maxRisk]
+      .some(Number.isFinite) || (scoreBand && scoreBand !== "all");
+    let scoreByToken = new Map();
+    if (hasScoreFilter) {
+      const active = await this.mongoOperation("catalog-score.active-model", () =>
+        this.modelVersionModel.findOne({ kind: "batch-price", status: "active" })
+          .select({ modelId: 1 }).lean());
+      if (!active) return { total: 0, listings: [] };
+      const scoreFilter = { modelId: active.modelId };
+      const recommendation = {};
+      if (Number.isFinite(minScore)) recommendation.$gte = minScore;
+      if (Number.isFinite(maxScore)) recommendation.$lte = maxScore;
+      if (Object.keys(recommendation).length) scoreFilter.recommendation = recommendation;
+      if (Number.isFinite(minConfidence)) scoreFilter.confidence = { $gte: minConfidence };
+      if (Number.isFinite(maxRisk)) scoreFilter.risk = { $lte: maxRisk };
+      if (scoreBand && scoreBand !== "all") scoreFilter.band = scoreBand;
+      const matchingScores = await this.mongoOperation("catalog-score.filter", () =>
+        this.listingScoreModel.find(scoreFilter)
+          .select({ token: 1, rank: 1, recommendation: 1, confidence: 1, propertyQuality: 1, risk: 1, band: 1 })
+          .limit(20_000).lean());
+      scoreByToken = new Map(matchingScores.map((score) => [score.token, plain(score)]));
+      if (!scoreByToken.size) return { total: 0, listings: [] };
+      filters.push({ token: { $in: [...scoreByToken.keys()] } });
+    }
     const filter = filters.length ? { $and: filters } : {};
     const [total, documents] = await this.mongoOperation("listings.query", () => Promise.all([
       this.listingModel.countDocuments(filter),
       this.listingModel.find(filter).sort({ lastSeenAt: -1, token: 1 }).skip(offset).limit(limit).lean(),
     ]));
-    return { total, listings: documents.map(({ _id, ...document }) => plain(document)) };
+    return { total, listings: documents.map(({ _id, ...document }) => ({
+      ...plain(document),
+      ...(scoreByToken.has(document.token) ? { marketScore: scoreByToken.get(document.token) } : {}),
+    })) };
   }
 
   async listingFacets() {
@@ -165,6 +208,53 @@ export class MongoMarketStore extends JsonMarketStore {
       this.listingModel.aggregate([{ $group: { _id: null, minPrice: { $min: "$pricing.price" }, maxPrice: { $max: "$pricing.price" }, minArea: { $min: "$property.area" }, maxArea: { $max: "$property.area" } } }]),
     ]));
     return { districts: districts.sort(), categories: categories.sort(), bounds: bounds[0] || {} };
+  }
+
+  async matchBuyerRequirement(requirement, {
+    limit = 30, cursor = null, candidateLimit = 500, queryMaxTimeMs = 2_000,
+  } = {}) {
+    const boundedLimit = Math.max(1, Math.min(50, Math.floor(limit)));
+    const boundedCandidates = Math.max(boundedLimit, Math.min(1_000, Math.floor(candidateLimit)));
+    const filter = buildBuyerMongoFilter(requirement);
+    const fingerprint = criteriaFingerprint(requirement);
+    const decodedCursor = decodeMatchCursor(cursor, fingerprint);
+    const projection = {
+      token: 1, url: 1, title: 1, description: 1, images: { $slice: 1 },
+      subcategory: 1, neighborhood: 1, district: 1, resolvedLocation: 1,
+      property: 1, propertyDetails: 1, pricing: 1, amenities: 1,
+      advertiserType: 1, advertiserSignals: 1, media: 1, coordinates: 1,
+      quality: 1, lifecycle: 1, publication: 1, firstSeenAt: 1, lastSeenAt: 1,
+      contentFingerprint: 1,
+    };
+    const [total, candidates, activeModel] = await this.mongoOperation("buyer-match.candidates", () => Promise.all([
+      this.listingModel.countDocuments(filter).maxTimeMS(queryMaxTimeMs),
+      this.listingModel.find(filter, projection).sort({ lastSeenAt: -1, token: 1 })
+        .limit(boundedCandidates + 1).maxTimeMS(queryMaxTimeMs).lean(),
+      this.modelVersionModel.findOne({ kind: "batch-price", status: "active" })
+        .select({ modelId: 1, version: 1, generatedAt: 1 }).maxTimeMS(queryMaxTimeMs).lean(),
+    ]));
+    const capped = candidates.slice(0, boundedCandidates);
+    const scores = activeModel && capped.length
+      ? await this.mongoOperation("buyer-match.scores", () => this.listingScoreModel.find({
+        modelId: activeModel.modelId,
+        token: { $in: capped.map((listing) => listing.token) },
+      }).select({ token: 1, rank: 1, recommendation: 1, confidence: 1, propertyQuality: 1, risk: 1, band: 1 })
+        .maxTimeMS(queryMaxTimeMs).lean())
+      : [];
+    const scoreByToken = new Map(scores.map((score) => [score.token, score]));
+    let ranked = rankBuyerCandidates(requirement, capped.map(({ _id, ...listing }) => plain(listing)), scoreByToken);
+    if (decodedCursor) ranked = ranked.filter((row) => row.matchScore < decodedCursor.score
+      || (row.matchScore === decodedCursor.score && row.listing.token > decodedCursor.token));
+    const page = ranked.slice(0, boundedLimit);
+    const hasMore = ranked.length > boundedLimit || total > boundedCandidates;
+    return {
+      total,
+      evaluated: capped.length,
+      truncated: total > boundedCandidates,
+      model: activeModel ? plain(activeModel) : null,
+      matches: page,
+      nextCursor: hasMore && page.length ? encodeMatchCursor(page.at(-1), fingerprint) : null,
+    };
   }
 
   async updateNearbyPlaces(token, nearbyPlaces) {
@@ -391,14 +481,48 @@ export class MongoMarketStore extends JsonMarketStore {
 
   async latestScoredListings({ limit = 0 } = {}) {
     const active = await this.mongoOperation("scores.active-model", () =>
-      this.modelVersionModel.findOne({ kind: "batch-price", status: "active" }).lean());
+      this.modelVersionModel.findOne({ kind: "batch-price", status: "active" })
+        .select({ modelId: 1, version: 1, generatedAt: 1, metrics: 1 }).lean());
     if (!active) return { model: null, listings: [] };
     const scores = await this.mongoOperation("scores.latest", () => {
-      let query = this.listingScoreModel.find({ modelId: active.modelId }).sort({ rank: 1 }).lean();
+      // Projection keeps the active-score read small. allowDiskUse is a safe
+      // fallback during rolling deploys before active_score_rank is installed.
+      let query = this.listingScoreModel.find({ modelId: active.modelId })
+        .select({
+          _id: 0,
+          "snapshot.token": 1,
+          "snapshot.rank": 1,
+          "snapshot.title": 1,
+          "snapshot.neighborhood": 1,
+          "snapshot.url": 1,
+          "snapshot.asking": 1,
+          "snapshot.property": 1,
+          "snapshot.amenities": 1,
+          "snapshot.scores": 1,
+          "snapshot.valuation": 1,
+        })
+        .sort({ rank: 1 })
+        .allowDiskUse(true)
+        .lean();
       if (limit > 0) query = query.limit(limit);
       return query;
     });
     return { model: plain(active), listings: scores.map((item) => plain(item.snapshot)) };
+  }
+
+  async scoredListingSnapshot(token, { modelId = null } = {}) {
+    let selectedModelId = modelId;
+    if (!selectedModelId) {
+      const active = await this.mongoOperation("scores.active-model", () =>
+        this.modelVersionModel.findOne({ kind: "batch-price", status: "active" })
+          .select({ modelId: 1 }).lean());
+      selectedModelId = active?.modelId || null;
+    }
+    if (!selectedModelId) return null;
+    const score = await this.mongoOperation("scores.listing-snapshot", () =>
+      this.listingScoreModel.findOne({ modelId: selectedModelId, token })
+        .select({ _id: 0, snapshot: 1 }).lean());
+    return score?.snapshot ? plain(score.snapshot) : null;
   }
 
   async listingScoreHistory(token, { limit = 50 } = {}) {
@@ -436,20 +560,10 @@ export class MongoMarketStore extends JsonMarketStore {
   }
 
   async flush() {
-    const documents = (await this.mongoOperation(
-      "listing.snapshot",
-      () => this.listingModel.find({}).sort({ token: 1 }).lean(),
-    ))
-      .map(({ _id, ...document }) => plain(document));
-    this.listings.clear();
-    for (const listing of documents) this.listings.set(listing.token, listing);
-    await _jsonHelpers.writeJsonAtomic(this.paths.listings, {
-      schemaVersion: "1.0.0",
-      derivedFrom: "mongodb",
-      updatedAt: new Date().toISOString(),
-      listings: documents,
-    });
-    this.pendingSnapshotChanges = 0;
+    // MongoDB is authoritative. Building the 40+ MB compatibility snapshot in
+    // the HTTP process blocks the event loop, so the scoring worker refreshes
+    // it off-thread immediately before a scoring generation.
+    return { source: "mongodb", snapshot: "deferred-to-scoring-worker" };
   }
 
   async close() {

@@ -7,6 +7,7 @@ import ScoringWorkshopPage from "./ScoringWorkshopPage.jsx";
 import ListingsPage from "./ListingsPage.jsx";
 import SavedListingDetailPage from "./SavedListingDetailPage.jsx";
 import DataQualityPage from "./DataQualityPage.jsx";
+import BuyerMatchingPage from "./BuyerMatchingPage.jsx";
 import "./typography.css";
 import "./styles.css";
 
@@ -16,6 +17,7 @@ function AppRouter() {
   if (path === "/score-workshop") return <ScoringWorkshopPage />;
   if (path === "/catalog") return <ListingsPage />;
   if (path === "/data-quality") return <DataQualityPage />;
+  if (path === "/buyer-matching") return <BuyerMatchingPage />;
   const location = path.match(/^\/explore(?:\/([a-z0-9-]+))?$/i);
   if (location) return <LocationExplorer slug={location[1] || "iran"} />;
   const listing = path.match(/^\/listing\/([A-Za-z0-9_-]+)$/);

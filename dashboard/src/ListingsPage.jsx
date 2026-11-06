@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import {
   AppFooter,
   AppHeader,
@@ -251,6 +251,32 @@ const CATALOG_CSS = `
     color: ${T.textMuted};
     pointer-events: none;
   }
+  .listings-page .listing-multiselect { position: relative; min-width: 0; }
+  .listings-page .listing-multiselect > span { display: block; margin-bottom: 7px; color: ${T.textSec}; font-size: 12px; font-weight: 750; }
+  .listings-page .listing-multiselect details { position: relative; }
+  .listings-page .listing-multiselect summary { display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:49px;padding:10px 13px;border:1px solid ${T.borderLight};border-radius:12px;background:${T.surface};color:${T.text};cursor:pointer;font-size:13px;font-weight:650;list-style:none; }
+  .listings-page .listing-multiselect summary::-webkit-details-marker { display:none; }
+  .listings-page .listing-multiselect summary small { color:${T.primary};font-size:11px; }
+  .listings-page .listing-multiselect__panel { position:absolute;z-index:40;inset-inline:0;top:calc(100% + 7px);display:grid;min-width:min(330px,calc(100vw - 64px));gap:9px;padding:12px;border:1px solid ${T.borderMed};border-radius:13px;background:${T.surface};box-shadow:${T.shadow}; }
+  .listings-page .listing-multiselect__panel input[type="search"] { width:100%;height:42px;padding:8px 11px;border:1px solid ${T.borderLight};border-radius:9px;background:${T.surfaceLight};color:${T.text};outline:0; }
+  .listings-page .listing-multiselect__options { display:grid;max-height:260px;overflow:auto;overscroll-behavior:contain; }
+  .listings-page .listing-multiselect__options label { display:flex;align-items:center;gap:9px;min-height:40px;padding:7px 5px;border-bottom:1px solid ${T.border};color:${T.textSec};cursor:pointer;font-size:12px; }
+  .listings-page .listing-multiselect__options input { width:17px;height:17px;accent-color:${T.primary}; }
+  .listings-page .listing-multiselect__clear { min-height:38px;border:1px solid ${T.borderLight};border-radius:8px;background:${T.surfaceLight};color:${T.textSec};cursor:pointer;font:inherit;font-size:11px;font-weight:750; }
+  .listings-page .listing-filter-chips { grid-column:1/-1;display:flex;flex-wrap:wrap;gap:7px; }
+  .listings-page .listing-filter-chips button { display:inline-flex;align-items:center;gap:7px;min-height:34px;padding:5px 10px;border:1px solid ${T.primaryBg2};border-radius:999px;background:${T.primaryBg};color:${T.primary};cursor:pointer;font:inherit;font-size:11px;font-weight:750; }
+  .listings-page .scenario-filter-note { grid-column:1/-1;margin:-4px 0 0;color:${T.textMuted};font-size:11px;line-height:1.8; }
+  .listings-page .catalog-voice { grid-column:1/-1;display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:12px;padding:14px;border:1px solid ${T.primaryBg2};border-radius:14px;background:${T.primaryBg}; }
+  .listings-page .catalog-voice__copy { min-width:0; }
+  .listings-page .catalog-voice__copy strong { display:block;color:${T.text};font-size:13px; }
+  .listings-page .catalog-voice__copy p { margin:4px 0 0;color:${T.textSec};font-size:11px;line-height:1.8;overflow-wrap:anywhere; }
+  .listings-page .catalog-voice__actions { display:flex;align-items:center;gap:8px; }
+  .listings-page .catalog-voice__button { display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:44px;padding:9px 13px;border:1px solid ${T.primaryBg2};border-radius:11px;background:${T.surface};color:${T.primary};cursor:pointer;font:inherit;font-size:12px;font-weight:800; }
+  .listings-page .catalog-voice__button:disabled { cursor:not-allowed;opacity:.5; }
+  .listings-page .catalog-voice__button.is-recording { border-color:${T.redBg2};background:${T.redBg};color:${T.red}; }
+  .listings-page .catalog-voice__button svg { flex:none; }
+  .listings-page .catalog-voice__status { grid-column:1/-1;margin:0;color:${T.textSec};font-size:11px;line-height:1.8; }
+  .listings-page .catalog-voice__status[data-error="true"] { color:${T.red}; }
   .listings-page .listing-filters__advanced {
     grid-column: 1 / -1;
     min-width: 0;
@@ -770,6 +796,12 @@ const CATALOG_CSS = `
     .listings-page .listing-filters__toolbar h2 { font-size: 15px; }
     .listings-page .listing-filters__toolbar .listing-reset { min-height: 41px; padding-inline: 10px; font-size: 11px; }
     .listings-page .listing-filter--search { grid-column: 1 / -1; }
+    .listings-page .listing-multiselect { grid-column: 1 / -1; }
+    .listings-page .listing-multiselect__panel { position:static;min-width:0;margin-top:7px; }
+    .listings-page .listing-filter-chips button { min-height:40px; }
+    .listings-page .catalog-voice { grid-template-columns:minmax(0,1fr); }
+    .listings-page .catalog-voice__actions { width:100%; }
+    .listings-page .catalog-voice__button { flex:1;min-height:48px; }
     .listings-page .listing-filters > .listing-filter[for='lifecycle-filter'] { grid-column: 1 / -1; }
     .listings-page .listing-filter :is(input,select) { height: 49px; }
     .listings-page .listing-filters__advanced-body { grid-template-columns: repeat(2,minmax(0,1fr)); padding: 15px; gap: 12px; }
@@ -822,6 +854,177 @@ function SelectFilter({ id, label, value, onChange, children }) {
     </label>
   );
 }
+function MultiSelectFilter({ id, label, options, values, onChange }) {
+  const [search, setSearch] = useState("");
+  const deferredSearch = useDeferredValue(search.trim().toLocaleLowerCase("fa"));
+  const visible = deferredSearch
+    ? options.filter((item) => item.toLocaleLowerCase("fa").includes(deferredSearch))
+    : options;
+  const toggle = (value) => onChange(values.includes(value)
+    ? values.filter((item) => item !== value)
+    : [...values, value]);
+  return <div className="listing-multiselect">
+    <span id={`${id}-label`}>{label}</span>
+    <details>
+      <summary aria-labelledby={`${id}-label`}><span>{values.length ? `${formatNumber(values.length)} محله انتخاب شده` : "همه محله‌ها"}</span>{values.length > 0 && <small>{formatNumber(values.length)}</small>}</summary>
+      <div className="listing-multiselect__panel">
+        <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="جستجوی محله" aria-label="جستجوی محله" />
+        <div className="listing-multiselect__options" role="group" aria-labelledby={`${id}-label`}>
+          {visible.map((value) => <label key={value}><input type="checkbox" checked={values.includes(value)} onChange={() => toggle(value)} /><span>{value}</span></label>)}
+        </div>
+        {values.length > 0 && <button className="listing-multiselect__clear" type="button" onClick={() => onChange([])}>پاک کردن محله‌ها</button>}
+      </div>
+    </details>
+  </div>;
+}
+function VoiceFilterPanel({ onApply, resultCount }) {
+  const [enabled, setEnabled] = useState(null);
+  const [state, setState] = useState("idle");
+  const [message, setMessage] = useState("");
+  const [hasError, setHasError] = useState(false);
+  const recorderRef = useRef(null);
+  const streamRef = useRef(null);
+  const chunksRef = useRef([]);
+  const stopTimerRef = useRef(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch("/ai/voice/status", { signal: controller.signal })
+      .then((response) => response.ok ? response.json() : { enabled: false })
+      .then((payload) => setEnabled(Boolean(payload.enabled)))
+      .catch(() => setEnabled(false));
+    return () => controller.abort();
+  }, []);
+
+  const releaseRecorder = () => {
+    if (stopTimerRef.current) window.clearTimeout(stopTimerRef.current);
+    stopTimerRef.current = null;
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    recorderRef.current = null;
+  };
+
+  useEffect(() => () => releaseRecorder(), []);
+
+  const submitRecording = async (blob) => {
+    setState("processing");
+    setHasError(false);
+    setMessage("در حال تبدیل صدا و ساخت فیلترها…");
+    try {
+      const response = await fetch("/ai/voice/catalog-filters", {
+        method: "POST",
+        headers: { "Content-Type": blob.type.split(";")[0] || "audio/webm" },
+        body: blob,
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.message || `HTTP ${response.status}`);
+      onApply(payload.filters || {});
+      setMessage(`درخواست «${payload.transcript}» به فیلترهای کاتالوگ تبدیل شد.`);
+    } catch (error) {
+      setHasError(true);
+      setMessage(error.message || "پردازش درخواست صوتی ناموفق بود.");
+    } finally {
+      setState("idle");
+    }
+  };
+
+  const startRecording = async () => {
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      setHasError(true);
+      setMessage("مرورگر شما ضبط صدا را پشتیبانی نمی‌کند.");
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      chunksRef.current = [];
+      const preferred = ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/webm"]
+        .find((type) => MediaRecorder.isTypeSupported(type));
+      const recorder = new MediaRecorder(stream, preferred ? { mimeType: preferred } : undefined);
+      recorderRef.current = recorder;
+      recorder.ondataavailable = (event) => { if (event.data.size) chunksRef.current.push(event.data); };
+      recorder.onstop = () => {
+        const blob = new Blob(chunksRef.current, { type: recorder.mimeType || "audio/webm" });
+        releaseRecorder();
+        if (blob.size) void submitRecording(blob);
+      };
+      recorder.start();
+      setState("recording");
+      setHasError(false);
+      setMessage("در حال ضبط؛ درخواست ملک را بگویید. ضبط حداکثر ۲۰ ثانیه است.");
+      stopTimerRef.current = window.setTimeout(() => recorder.stop(), 20_000);
+    } catch (error) {
+      releaseRecorder();
+      setHasError(true);
+      setMessage(error.name === "NotAllowedError"
+        ? "برای استفاده از جستجوی صوتی، دسترسی میکروفن را فعال کنید."
+        : "شروع ضبط صدا ناموفق بود.");
+    }
+  };
+
+  const stopRecording = () => {
+    if (recorderRef.current?.state === "recording") recorderRef.current.stop();
+  };
+
+  const speakResults = async () => {
+    setState("speaking");
+    setHasError(false);
+    setMessage("در حال ساخت صدای نتیجه با OpenAI…");
+    try {
+      const response = await fetch("/ai/voice/speech", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: `طبق فیلترهای فعلی، ${resultCount} آگهی منطبق پیدا شده است.` }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.message || `HTTP ${response.status}`);
+      }
+      const url = URL.createObjectURL(await response.blob());
+      const audio = new Audio(url);
+      audio.onended = () => URL.revokeObjectURL(url);
+      audio.onerror = () => URL.revokeObjectURL(url);
+      await audio.play();
+      setMessage("صدای پخش‌شده با هوش مصنوعی OpenAI تولید شده است.");
+    } catch (error) {
+      setHasError(true);
+      setMessage(error.message || "ساخت یا پخش صدا ناموفق بود.");
+    } finally {
+      setState("idle");
+    }
+  };
+
+  if (enabled === false) return <div className="catalog-voice">
+    <div className="catalog-voice__copy">
+      <strong>جستجوی صوتی</strong>
+      <p>برای فعال‌شدن ورودی و خروجی صوتی، کلید سرور OpenAI را تنظیم کنید.</p>
+    </div>
+  </div>;
+
+  return <div className="catalog-voice">
+    <div className="catalog-voice__copy">
+      <strong>فیلتر با صدای شما</strong>
+      <p>مثلاً بگویید: «آپارتمان‌های ونک و میرداماد، بالای ۷۰ امتیاز، شخصی و دارای پارکینگ».</p>
+    </div>
+    <div className="catalog-voice__actions">
+      <button
+        className={`catalog-voice__button${state === "recording" ? " is-recording" : ""}`}
+        type="button"
+        disabled={enabled !== true || !["idle", "recording"].includes(state)}
+        aria-pressed={state === "recording"}
+        onClick={state === "recording" ? stopRecording : startRecording}
+      >
+        <svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5M8 22h8"/></svg>
+        {state === "recording" ? "پایان ضبط" : state === "processing" ? "در حال پردازش" : "گفتن فیلترها"}
+      </button>
+      <button className="catalog-voice__button" type="button" disabled={enabled !== true || state !== "idle"} onClick={speakResults}>
+        <svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M11 5 6 9H2v6h4l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18 6a8.5 8.5 0 0 1 0 12"/></svg>
+        شنیدن نتیجه
+      </button>
+    </div>
+    {message && <p className="catalog-voice__status" role={hasError ? "alert" : "status"} data-error={hasError}>{message}</p>}
+  </div>;
+}
 function ListingCard({ listing }) {
   const details = listing.propertyDetails || {};
   const amenities = Object.entries(listing.amenities || {}).filter(
@@ -853,6 +1056,13 @@ function ListingCard({ listing }) {
                 {formatNumber(listing.scenarioScore.recommendation)}
               </strong>
               <small>رتبه {formatNumber(listing.scenarioScore.rank)}</small>
+            </div>
+          )}
+          {!listing.scenarioScore && listing.marketScore && (
+            <div className="scenario-score-badge" aria-label="امتیاز فعال بازار">
+              <span>امتیاز بازار</span>
+              <strong>{formatNumber(listing.marketScore.recommendation)}</strong>
+              <small>رتبه {formatNumber(listing.marketScore.rank)}</small>
             </div>
           )}
           <small className="catalog-card__price-label">قیمت کل</small>
@@ -921,7 +1131,7 @@ export default function ListingsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [query, setQuery] = useState(initial.get("q") || "");
-  const [district, setDistrict] = useState(initial.get("district") || "all");
+  const [districts, setDistricts] = useState([...new Set(initial.getAll("district").filter((value) => value && value !== "all"))]);
   const [category, setCategory] = useState(initial.get("category") || "all");
   const [readiness, setReadiness] = useState(initial.get("readiness") || "all");
   const [lifecycle, setLifecycle] = useState(initial.get("status") || "active");
@@ -948,11 +1158,16 @@ export default function ListingsPage() {
   const [maxArea, setMaxArea] = useState(initial.get("maxArea") || "");
   const [minRooms, setMinRooms] = useState(initial.get("minRooms") || "");
   const [minYear, setMinYear] = useState(initial.get("minYear") || "");
+  const [minScore, setMinScore] = useState(initial.get("minScore") || "");
+  const [maxScore, setMaxScore] = useState(initial.get("maxScore") || "");
+  const [minConfidence, setMinConfidence] = useState(initial.get("minConfidence") || "");
+  const [maxRisk, setMaxRisk] = useState(initial.get("maxRisk") || "");
+  const [scoreBand, setScoreBand] = useState(initial.get("scoreBand") || "all");
   const [amenities, setAmenities] = useState(initial.getAll("amenity"));
   const filterKey = JSON.stringify([
-    query, district, category, readiness, lifecycle, advertiserType, scenario,
+    query, districts, category, readiness, lifecycle, advertiserType, scenario,
     minPrice, maxPrice, minPricePerMeter, maxPricePerMeter, minArea, maxArea,
-    minRooms, minYear, amenities,
+    minRooms, minYear, minScore, maxScore, minConfidence, maxRisk, scoreBand, amenities,
   ]);
   const [pagination, setPagination] = useState({ page: 0, filterKey });
   const page = pagination.filterKey === filterKey ? pagination.page : 0;
@@ -969,7 +1184,7 @@ export default function ListingsPage() {
         if (value && value !== "all") params.set(key, value);
       };
       add("q", query.trim());
-      add("district", district);
+      districts.forEach((value) => params.append("district", value));
       add("category", category);
       add("readiness", readiness);
       add("status", lifecycle);
@@ -982,6 +1197,11 @@ export default function ListingsPage() {
       add("maxArea", maxArea);
       add("minRooms", minRooms);
       add("minYear", minYear);
+      add("minScore", minScore);
+      add("maxScore", maxScore);
+      add("minConfidence", minConfidence);
+      add("maxRisk", maxRisk);
+      add("scoreBand", scoreBand);
       amenities.forEach((value) => params.append("amenity", value));
       const endpoint =
         scenario === "all"
@@ -1018,7 +1238,7 @@ export default function ListingsPage() {
     };
   }, [
     query,
-    district,
+    districts,
     category,
     readiness,
     lifecycle,
@@ -1032,6 +1252,11 @@ export default function ListingsPage() {
     maxArea,
     minRooms,
     minYear,
+    minScore,
+    maxScore,
+    minConfidence,
+    maxRisk,
+    scoreBand,
     amenities,
     page,
     filterKey,
@@ -1057,7 +1282,7 @@ export default function ListingsPage() {
   useEffect(() => {
     const params = new URLSearchParams();
     if (query) params.set("q", query);
-    if (district !== "all") params.set("district", district);
+    districts.forEach((value) => params.append("district", value));
     if (category !== "all") params.set("category", category);
     if (readiness !== "all") params.set("readiness", readiness);
     if (advertiserType !== "all") params.set("advertiserType", advertiserType);
@@ -1072,10 +1297,15 @@ export default function ListingsPage() {
       ["maxArea", maxArea],
       ["minRooms", minRooms],
       ["minYear", minYear],
+      ["minScore", minScore],
+      ["maxScore", maxScore],
+      ["minConfidence", minConfidence],
+      ["maxRisk", maxRisk],
     ].forEach(([key, value]) => {
       if (value) params.set(key, value);
     });
     amenities.forEach((value) => params.append("amenity", value));
+    if (scoreBand !== "all") params.set("scoreBand", scoreBand);
     window.history.replaceState(
       null,
       "",
@@ -1083,7 +1313,7 @@ export default function ListingsPage() {
     );
   }, [
     query,
-    district,
+    districts,
     category,
     readiness,
     lifecycle,
@@ -1097,11 +1327,16 @@ export default function ListingsPage() {
     maxArea,
     minRooms,
     minYear,
+    minScore,
+    maxScore,
+    minConfidence,
+    maxRisk,
+    scoreBand,
     amenities,
   ]);
   const reset = () => {
     setQuery("");
-    setDistrict("all");
+    setDistricts([]);
     setCategory("all");
     setReadiness("all");
     setLifecycle("active");
@@ -1115,6 +1350,11 @@ export default function ListingsPage() {
     setMaxArea("");
     setMinRooms("");
     setMinYear("");
+    setMinScore("");
+    setMaxScore("");
+    setMinConfidence("");
+    setMaxRisk("");
+    setScoreBand("all");
     setAmenities([]);
   };
   const toggleAmenity = (name) =>
@@ -1123,12 +1363,35 @@ export default function ListingsPage() {
         ? current.filter((item) => item !== name)
         : [...current, name],
     );
+  const applyVoiceFilters = (filters) => {
+    const text = (value) => Number.isFinite(value) ? String(value) : "";
+    setQuery(filters.query || "");
+    setDistricts(Array.isArray(filters.districts) ? filters.districts : []);
+    setCategory(filters.category || "all");
+    setReadiness(filters.readiness || "all");
+    setLifecycle(filters.status || "active");
+    setAdvertiserType(filters.advertiserType || "all");
+    setScenario(filters.scenarioId || "all");
+    setMinPrice(text(filters.minPrice));
+    setMaxPrice(text(filters.maxPrice));
+    setMinPricePerMeter(text(filters.minPricePerMeter));
+    setMaxPricePerMeter(text(filters.maxPricePerMeter));
+    setMinArea(text(filters.minArea));
+    setMaxArea(text(filters.maxArea));
+    setMinRooms(text(filters.minRooms));
+    setMinYear(text(filters.minYear));
+    setMinScore(text(filters.minScore));
+    setMaxScore(text(filters.maxScore));
+    setMinConfidence(text(filters.minConfidence));
+    setMaxRisk(text(filters.maxRisk));
+    setScoreBand(filters.scoreBand || "all");
+    setAmenities(Array.isArray(filters.amenities) ? filters.amenities : []);
+  };
   // Presentation-only count for the collapsed advanced-filters label.
   const advancedFilterCount =
     [
       readiness !== "all",
       advertiserType !== "all",
-      scenario !== "all",
       !!minPrice,
       !!maxPrice,
       !!minPricePerMeter,
@@ -1137,6 +1400,11 @@ export default function ListingsPage() {
       !!maxArea,
       !!minRooms,
       !!minYear,
+      !!minScore,
+      !!maxScore,
+      !!minConfidence,
+      !!maxRisk,
+      scoreBand !== "all",
     ].filter(Boolean).length + amenities.length;
   return (
     <div className="listings-page" dir="rtl">
@@ -1166,6 +1434,7 @@ export default function ListingsPage() {
               پاک‌کردن فیلترها
             </button>
           </div>
+          <VoiceFilterPanel onApply={applyVoiceFilters} resultCount={total} />
           <label
             className="listing-filter listing-filter--search"
             htmlFor="listing-search"
@@ -1193,17 +1462,13 @@ export default function ListingsPage() {
               placeholder="عنوان، محله یا شناسه آگهی"
             />
           </label>
-          <SelectFilter
+          <MultiSelectFilter
             id="district-filter"
-            label="محله"
-            value={district}
-            onChange={setDistrict}
-          >
-            <option value="all">همه محله‌ها</option>
-            {facets.districts.map((value) => (
-              <option key={value}>{value}</option>
-            ))}
-          </SelectFilter>
+            label="محله‌ها"
+            options={facets.districts}
+            values={districts}
+            onChange={setDistricts}
+          />
           <SelectFilter
             id="category-filter"
             label="دسته"
@@ -1227,6 +1492,25 @@ export default function ListingsPage() {
             <option value="possibly-removed">احتمال حذف</option>
             <option value="removed">حذف‌شده</option>
           </SelectFilter>
+          <SelectFilter
+            id="scenario-filter"
+            label="سناریوی مرتب‌سازی"
+            value={scenario}
+            onChange={setScenario}
+          >
+            <option value="all">امتیاز اصلی بازار</option>
+            {scenarios.map((item) => (
+              <option value={item.scenarioId} key={item.scenarioId}>{item.name}</option>
+            ))}
+          </SelectFilter>
+          <p className="scenario-filter-note">
+            {scenario === "all"
+              ? "فیلتر امتیاز بر اساس آخرین مدل فعال بازار اعمال می‌شود."
+              : "نتایج با امتیاز سناریوی انتخاب‌شده دوباره محاسبه و از بیشترین امتیاز مرتب می‌شوند."}
+          </p>
+          {districts.length > 0 && <div className="listing-filter-chips" aria-label="محله‌های انتخاب‌شده">
+            {districts.map((value) => <button type="button" key={value} onClick={() => setDistricts((current) => current.filter((item) => item !== value))}>{value}<span aria-hidden="true">×</span></button>)}
+          </div>}
           <details
             className="listing-filters__advanced"
             defaultOpen={advancedFilterCount > 0}
@@ -1279,19 +1563,20 @@ export default function ListingsPage() {
                 <option value="real-estate-business">مشاور املاک</option>
                 <option value="unknown">نامشخص</option>
               </SelectFilter>
-              <SelectFilter
-                id="scenario-filter"
-                label="سناریوی امتیازدهی و مرتب‌سازی"
-                value={scenario}
-                onChange={setScenario}
-              >
-                <option value="all">مرتب‌سازی معمول آگهی‌ها</option>
-                {scenarios.map((item) => (
-                  <option value={item.scenarioId} key={item.scenarioId}>
-                    {item.name}
-                  </option>
-                ))}
+              <div className="listing-range-card">
+                <strong>{scenario === "all" ? "امتیاز اصلی بازار" : "امتیاز سناریوی انتخاب‌شده"}</strong>
+                <label>از<input inputMode="numeric" min="0" max="100" value={minScore} onChange={(event) => setMinScore(event.target.value)} placeholder="۰" /></label>
+                <label>تا<input inputMode="numeric" min="0" max="100" value={maxScore} onChange={(event) => setMaxScore(event.target.value)} placeholder="۱۰۰" /></label>
+              </div>
+              <SelectFilter id="score-band-filter" label="رده امتیاز" value={scoreBand} onChange={setScoreBand}>
+                <option value="all">همه رده‌ها</option>
+                <option value="strong-value">ارزش قوی</option>
+                <option value="promising">امیدبخش</option>
+                <option value="fair">منصفانه</option>
+                <option value="weak-value">ضعیف</option>
               </SelectFilter>
+              <label className="listing-filter"><span>حداقل اطمینان</span><input inputMode="numeric" min="0" max="100" value={minConfidence} onChange={(event) => setMinConfidence(event.target.value)} placeholder="مثلاً ۶۰" /></label>
+              <label className="listing-filter"><span>حداکثر ریسک</span><input inputMode="numeric" min="0" max="100" value={maxRisk} onChange={(event) => setMaxRisk(event.target.value)} placeholder="مثلاً ۳۰" /></label>
               <div className="listing-range-card">
                 <strong>قیمت کل</strong>
                 <label>

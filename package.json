@@ -6,6 +6,9 @@
   "type": "module",
   "scripts": {
     "start": "node src/index.js",
+    "start:api": "node src/apiProcess.js",
+    "start:crawler": "node src/crawlerProcess.js",
+    "start:scorer": "node src/scorerProcess.js",
     "dev": "node --watch src/index.js",
     "dev:mongodb": "node --watch scripts/dev-mongodb.js",
     "dashboard:dev": "vite --config dashboard/vite.config.js",
@@ -22,6 +25,10 @@
     "migrate:operational-state": "node scripts/migrate-operational-state.js",
     "migrate:scoring-state": "node scripts/migrate-scoring-state.js",
     "compact:score-storage": "node scripts/compact-score-storage.js",
+    "migrate:buyer-search-indexes": "node scripts/migrate-buyer-search-indexes.js",
+    "migrate:catalog-filter-indexes": "node scripts/migrate-catalog-filter-indexes.js",
+    "audit:buyer-search": "node scripts/audit-buyer-search.js",
+    "report:buyer-search": "node scripts/report-buyer-search.js",
     "build": "npm run dashboard:build",
     "test": "node --test test/*.test.js"
   },
@@ -29,6 +36,7 @@
     "@neshan-maps-platform/maplibre-sdk": "^6.16.0",
     "dotenv": "^17.4.2",
     "mongoose": "^9.11.4",
+    "openai": "^7.50.0",
     "playwright": "^1.62.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"

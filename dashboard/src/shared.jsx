@@ -485,6 +485,7 @@ export function Icon({ name, size = 20 }) {
 
 const NAV_LINKS = [
   { key: "listings", label: "آگهی‌ها", href: "/catalog" },
+  { key: "matching", label: "تطبیق تقاضا", href: "/buyer-matching" },
   { key: "overview", label: "نمای کلی", href: "/" },
   { key: "locations", label: "کاوش مناطق", href: "/explore/tehran" },
   { key: "analytics", label: "تحلیل امتیاز", href: "/score-analytics" },
@@ -500,6 +501,7 @@ export function AppNavigation({ active, className = "" }) {
   const pathname = typeof window === "undefined" ? "/" : window.location.pathname;
   const activeKey = active ?? (
     pathname === "/catalog" || pathname.startsWith("/listing/") ? "listings" :
+    pathname === "/buyer-matching" ? "matching" :
     pathname.startsWith("/explore") ? "locations" :
     NAV_LINKS.find((link) => link.href === pathname)?.key
   );

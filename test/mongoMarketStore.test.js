@@ -33,15 +33,45 @@ test("Mongo listing pages apply filters, stable ordering, skip and a 40-item lim
     find(filter) { calls.push(["find", filter]); return chain; },
   };
   const store = new MongoMarketStore({}, logger, { listingModel });
-  const result = await store.queryListings({ offset: 40, limit: 100, status: "active", query: "a.b" });
+  const result = await store.queryListings({ offset: 40, limit: 100, districts: ["ونک", "قلهک"], status: "active", query: "a.b" });
   assert.equal(result.total, 81);
   assert.deepEqual(result.listings, [{ token: "listing-41" }]);
   assert.deepEqual(calls[0][1], calls[1][1]);
-  assert.deepEqual(calls[0][1].$and[0], { "lifecycle.status": "active" });
-  assert.equal(calls[0][1].$and[1].$or[0].title.$regex, "a\\.b");
+  assert.ok(calls[0][1].$and.some((item) => item["lifecycle.status"] === "active"));
+  assert.ok(calls[0][1].$and.some((item) => item.$or?.[0]?.district?.$in?.includes("ونک")));
+  assert.ok(calls[0][1].$and.some((item) => item.$or?.[0]?.title?.$regex === "a\\.b"));
   assert.deepEqual(calls.slice(2), [
     ["sort", { lastSeenAt: -1, token: 1 }], ["skip", 40], ["limit", 40],
   ]);
+});
+
+test("Mongo catalog score filters use the active model and attach matching score metadata", async () => {
+  const listingChain = {
+    sort() { return this; }, skip() { return this; }, limit() { return this; },
+    async lean() { return [{ _id: "id", token: "scored-one", lastSeenAt: new Date() }]; },
+  };
+  const scoreChain = {
+    select() { return this; }, limit() { return this; },
+    async lean() { return [{ token: "scored-one", recommendation: 82, confidence: 75, risk: 12, band: "strong-value", rank: 1 }]; },
+  };
+  const activeChain = { select() { return this; }, async lean() { return { modelId: "active-model" }; } };
+  const listingModel = {
+    countDocuments() { return Promise.resolve(1); },
+    find() { return listingChain; },
+  };
+  const store = new MongoMarketStore({}, logger, {
+    listingModel,
+    modelVersionModel: { findOne() { return activeChain; } },
+    listingScoreModel: { find(filter) {
+      assert.equal(filter.modelId, "active-model");
+      assert.deepEqual(filter.recommendation, { $gte: 70 });
+      assert.deepEqual(filter.risk, { $lte: 30 });
+      return scoreChain;
+    } },
+  });
+  const result = await store.queryListings({ minScore: 70, maxRisk: 30 });
+  assert.equal(result.total, 1);
+  assert.equal(result.listings[0].marketScore.recommendation, 82);
 });
 
 test("Mongo store persists the listing before updating its cache and records changes in Mongo", async () => {

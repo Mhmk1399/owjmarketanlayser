@@ -59,7 +59,15 @@ const listingScoreSchema = new Schema({
 }, strictOptions);
 listingScoreSchema.index({ token: 1, generatedAt: -1 });
 listingScoreSchema.index({ runId: 1, rank: 1 }, { unique: true });
+listingScoreSchema.index(
+  { modelId: 1, rank: 1 },
+  { name: "active_score_rank" },
+);
 listingScoreSchema.index({ modelId: 1, recommendation: -1 });
+listingScoreSchema.index(
+  { modelId: 1, band: 1, recommendation: -1, confidence: -1, risk: 1 },
+  { name: "catalog_score_filters" },
+);
 listingScoreSchema.index({ scoringVersion: 1, generatedAt: -1 });
 
 const driftMetricSchema = new Schema({

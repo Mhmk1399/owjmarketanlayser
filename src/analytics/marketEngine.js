@@ -204,8 +204,6 @@ export class LiveMarketEngine {
   async ingest(listing) {
     const modelUpdated = this.updateModels(listing);
     if (modelUpdated) await this.persistModelState();
-    const snapshot = this.publicSnapshot();
-    await this.store.saveAnalytics(snapshot);
     const analysis = this.analyzeListing(listing);
     this.logger.info("analytics.listing.updated", "Live coordinate analytics updated", {
       token: listing.token,

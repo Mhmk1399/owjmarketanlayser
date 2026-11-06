@@ -53,11 +53,15 @@ test("listings API defaults and caps pages at 40 and forwards pagination to the 
   assert.equal(first.limit, 40);
   assert.equal(first.listings.length, 40);
   assert.equal(first.hasMore, true);
-  const second = await (await fetch(`${origin}/listings?offset=40&limit=500&status=active`)).json();
+  const second = await (await fetch(`${origin}/listings?offset=40&limit=500&status=active&district=%D9%88%D9%86%DA%A9&district=%D9%82%D9%84%D9%87%DA%A9&minScore=65&maxRisk=30&scoreBand=promising`)).json();
   assert.equal(second.offset, 40);
   assert.equal(second.limit, 40);
   assert.equal(second.listings[0].token, "40");
   assert.equal(requests[1].status, "active");
+  assert.deepEqual(requests[1].districts, ["ونک", "قلهک"]);
+  assert.equal(requests[1].minScore, 65);
+  assert.equal(requests[1].maxRisk, 30);
+  assert.equal(requests[1].scoreBand, "promising");
   const last = await (await fetch(`${origin}/listings?offset=80`)).json();
   assert.equal(last.listings.length, 1);
   assert.equal(last.hasMore, false);

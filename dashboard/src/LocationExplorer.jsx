@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AppHeader,
   Icon,
@@ -45,7 +45,8 @@ const LOCATION_CSS = `
   .owj-location-page button,
   .owj-location-page input { font: inherit; }
   .owj-location-page a:focus-visible,
-  .owj-location-page input:focus-visible {
+  .owj-location-page input:focus-visible,
+  .owj-location-page button:focus-visible {
     outline: 3px solid rgba(102,48,141,.28);
     outline-offset: 3px;
   }
@@ -371,12 +372,19 @@ const LOCATION_CSS = `
     gap: 0;
     min-width: 0;
     min-height: 187px;
-    padding: 20px 22px 18px;
+    padding: 0;
     background: #fff;
     border: 1px solid #e9ebef;
     border-radius: 17px;
     box-shadow: 0 2px 12px rgba(24,31,41,.018);
     transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;
+  }
+  .owj-location-page .place-card__link {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+    padding: 20px 22px 18px;
   }
   .owj-location-page .place-card:hover {
     transform: translateY(-2px);
@@ -469,6 +477,41 @@ const LOCATION_CSS = `
     line-height: 1.7;
     overflow-wrap: anywhere;
   }
+  .owj-location-page .place-card__action-wrap {
+    padding: 0 22px 18px;
+  }
+  .owj-location-page .place-card__crawl-button {
+    width: 100%;
+    min-height: 44px;
+    padding: 8px 12px;
+    border: 1px solid #e1d2ea;
+    border-radius: 11px;
+    background: #f7f2fa;
+    color: #66308d;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 800;
+    cursor: pointer;
+    transition: background .18s ease, border-color .18s ease, color .18s ease;
+  }
+  .owj-location-page .place-card__crawl-button:hover:not(:disabled) {
+    background: #efe4f5;
+    border-color: #cdb3dc;
+  }
+  .owj-location-page .place-card__crawl-button:disabled {
+    cursor: wait;
+    opacity: .72;
+  }
+  .owj-location-page .place-card__job-status {
+    display: block;
+    min-height: 24px;
+    margin-top: 7px;
+    color: #646975;
+    font-size: 11px;
+    line-height: 1.8;
+  }
+  .owj-location-page .place-card__job-status--error { color: #a23a45; }
+  .owj-location-page .place-card__job-status--success { color: #167665; }
 
   /* Listing list */
   .owj-location-page .location-listings {
@@ -639,9 +682,10 @@ const LOCATION_CSS = `
     .owj-location-page .place-grid { grid-template-columns: minmax(0, 1fr); gap: 10px; }
     .owj-location-page .place-card {
       min-height: 166px;
-      padding: 17px 18px 16px;
       border-radius: 15px;
     }
+    .owj-location-page .place-card__link { padding: 17px 18px 16px; }
+    .owj-location-page .place-card__action-wrap { padding: 0 18px 16px; }
     .owj-location-page .place-card h3 { font-size: 17px; }
     .owj-location-page .location-listings { gap: 10px; }
     .owj-location-page .location-listing {
@@ -735,26 +779,101 @@ export default function LocationExplorer({ slug = "iran" }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
   const [query, setQuery] = useState("");
+  const [areaJobs, setAreaJobs] = useState({});
+
+  const refreshLocation = useCallback(async (signal) => {
+    const response = await fetch(`/locations/${encodeURIComponent(slug)}`, {
+      signal,
+      headers: { accept: "application/json" },
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const next = await response.json();
+    setData(next);
+    setError(null);
+  }, [slug]);
 
   useEffect(() => {
     const controller = new AbortController();
     setData(null);
     setError(null);
-    fetch(`/locations/${encodeURIComponent(slug)}`, {
-      signal: controller.signal,
-      headers: { accept: "application/json" },
-    })
-      .then((response) =>
-        response.ok
-          ? response.json()
-          : Promise.reject(new Error(`HTTP ${response.status}`)),
-      )
-      .then(setData)
+    refreshLocation(controller.signal)
       .catch((caught) => {
         if (caught.name !== "AbortError") setError(caught.message);
       });
     return () => controller.abort();
-  }, [slug]);
+  }, [refreshLocation]);
+
+  const activeJobIds = useMemo(() => Object.values(areaJobs)
+    .filter((entry) => entry.job?.jobId && ["queued", "starting", "discovering", "processing"].includes(entry.job.status))
+    .map((entry) => entry.job.jobId)
+    .sort(), [areaJobs]);
+  const activeJobKey = activeJobIds.join(",");
+
+  useEffect(() => {
+    if (!activeJobKey) return undefined;
+    const controller = new AbortController();
+    const poll = async () => {
+      let completed = false;
+      await Promise.all(activeJobIds.map(async (jobId) => {
+        try {
+          const response = await fetch(`/area-crawl-jobs/${encodeURIComponent(jobId)}`, {
+            signal: controller.signal,
+            headers: { accept: "application/json" },
+          });
+          if (!response.ok) return;
+          const { job } = await response.json();
+          setAreaJobs((current) => ({
+            ...current,
+            [job.area.id]: {
+              job,
+              error: job.status === "failed" || job.status === "stopped"
+                ? "جستجوی محله کامل نشد؛ می‌توانید دوباره تلاش کنید."
+                : null,
+            },
+          }));
+          if (["completed", "failed", "stopped"].includes(job.status)) completed = true;
+        } catch (caught) {
+          if (caught.name !== "AbortError") {
+            setAreaJobs((current) => {
+              const areaId = Object.keys(current).find((key) => current[key].job?.jobId === jobId);
+              return areaId ? { ...current, [areaId]: { ...current[areaId], error: "وضعیت کار قابل دریافت نیست؛ دوباره تلاش می‌شود." } } : current;
+            });
+          }
+        }
+      }));
+      if (completed) refreshLocation(controller.signal).catch(() => {});
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 3_000);
+    return () => {
+      controller.abort();
+      window.clearInterval(timer);
+    };
+  }, [activeJobKey, refreshLocation]);
+
+  const startAreaJob = useCallback(async (item) => {
+    setAreaJobs((current) => ({ ...current, [item.id]: { submitting: true, job: null, error: null } }));
+    try {
+      const response = await fetch("/area-crawl-jobs", {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json" },
+        body: JSON.stringify({ areaId: item.id }),
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        const message = result.reason === "area-job-cooldown"
+            ? "این محله به‌تازگی بررسی شده است؛ برای جلوگیری از درخواست تکراری کمی بعد دوباره تلاش کنید."
+            : result.reason === "platform-cooldown"
+              ? "خزش به‌دلیل محدودیت منبع موقتاً متوقف است."
+              : "ساخت کار جستجوی محله ناموفق بود؛ دوباره تلاش کنید.";
+        setAreaJobs((current) => ({ ...current, [item.id]: { job: result.job || null, error: message } }));
+        return;
+      }
+      setAreaJobs((current) => ({ ...current, [item.id]: { job: result.job, error: null } }));
+    } catch {
+      setAreaJobs((current) => ({ ...current, [item.id]: { job: null, error: "ارتباط با سرویس برقرار نشد؛ دوباره تلاش کنید." } }));
+    }
+  }, []);
 
   const children = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase("fa");
@@ -880,12 +999,13 @@ export default function LocationExplorer({ slug = "iran" }) {
                   </label>
                 </div>
                 <div className="place-grid">
-                  {children.map((item) => (
-                    <a
-                      className="place-card"
-                      href={`/explore/${item.slug}`}
-                      key={item.id}
-                    >
+                  {children.map((item) => {
+                    const areaJob = areaJobs[item.id] || {};
+                    const jobRunning = areaJob.submitting || ["queued", "starting", "discovering", "processing"].includes(areaJob.job?.status);
+                    const jobSucceeded = areaJob.job?.status === "completed";
+                    return (
+                    <article className="place-card" key={item.id}>
+                      <a className="place-card__link" href={`/explore/${item.slug}`}>
                       <div className="place-card__top">
                         <span className="place-card__type">
                           <Icon name="location" size={15} />
@@ -910,8 +1030,43 @@ export default function LocationExplorer({ slug = "iran" }) {
                           {formatMoney(item.summary.medianPricePerMeter)} / متر
                         </small>
                       </div>
-                    </a>
-                  ))}
+                      </a>
+                      {data.node.type === "2" && item.type === "4" && (
+                        <div className="place-card__action-wrap">
+                          <button
+                            className="place-card__crawl-button"
+                            type="button"
+                            disabled={jobRunning}
+                            aria-busy={jobRunning ? "true" : undefined}
+                            onClick={() => void startAreaJob(item)}
+                          >
+                            {areaJob.submitting
+                              ? "در حال ساخت کار…"
+                              : areaJob.job?.status === "queued"
+                                ? "در صف اولویت خزش…"
+                              : jobRunning
+                                ? "در حال جستجوی این محله…"
+                                : item.summary.listingCount === 0
+                                  ? "یافتن آگهی‌های این محله"
+                                  : "به‌روزرسانی این محله"}
+                          </button>
+                          <span
+                            className={`place-card__job-status${areaJob.error ? " place-card__job-status--error" : jobSucceeded ? " place-card__job-status--success" : ""}`}
+                            role={areaJob.error ? "alert" : "status"}
+                            aria-live="polite"
+                          >
+                            {areaJob.error || (jobSucceeded
+                              ? `${formatNumber(areaJob.job.successful)} آگهی بررسی شد؛ ${formatNumber(areaJob.job.newListings)} مورد تازه بود.`
+                              : areaJob.job?.status === "queued"
+                                ? "پس از پایان محله جاری، این محله بررسی می‌شود."
+                              : jobRunning && areaJob.job
+                                ? `${formatNumber(areaJob.job.processed)} از ${formatNumber(areaJob.job.discovered)} آگهی بررسی شده است.`
+                                : "")}
+                          </span>
+                        </div>
+                      )}
+                    </article>
+                  );})}
                 </div>
                 {!children.length && (
                   <div className="location-empty">

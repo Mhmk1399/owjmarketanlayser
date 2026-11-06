@@ -1,0 +1,109 @@
+name: owj-market-analytics
+
+x-analytics-common: &analytics-common
+  image: ${ANALYTICS_IMAGE:?Set ANALYTICS_IMAGE to the loaded immutable image tag}
+  restart: unless-stopped
+  init: true
+  env_file:
+    - path: .env.production.shared
+      required: true
+  environment: &common-environment
+    NODE_ENV: production
+    ANALYTICS_LOG_TO_FILE: "false"
+    ANALYTICS_RESOURCE_LOG_INTERVAL_MS: "60000"
+    ANALYTICS_CRAWLER_CONTROL_TOKEN: ${ANALYTICS_CRAWLER_CONTROL_TOKEN:?Set ANALYTICS_CRAWLER_CONTROL_TOKEN}
+  logging:
+    driver: local
+    options:
+      max-size: "20m"
+      max-file: "5"
+  networks:
+    - analytics-internal
+
+services:
+  analytics-api:
+    <<: *analytics-common
+    container_name: owj-analytics-api
+    command: ["npm", "run", "start:api"]
+    env_file:
+      - path: .env.production.shared
+        required: true
+      - path: .env.production.api
+        required: true
+    environment:
+      <<: *common-environment
+      ANALYTICS_PROCESS_ROLE: api
+      ANALYTICS_HOST: 0.0.0.0
+      ANALYTICS_PORT: "4567"
+      ANALYTICS_AUTO_CRAWL: "false"
+      ANALYTICS_CRAWLER_CONTROL_URL: http://analytics-crawler:4568
+    depends_on:
+      analytics-crawler:
+        condition: service_healthy
+      analytics-scorer:
+        condition: service_healthy
+    networks:
+      - analytics-internal
+      - web_app-network
+    pids_limit: 200
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4567/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+
+  analytics-crawler:
+    <<: *analytics-common
+    container_name: owj-analytics-crawler
+    command: ["npm", "run", "start:crawler"]
+    environment:
+      <<: *common-environment
+      ANALYTICS_PROCESS_ROLE: crawler
+      ANALYTICS_AUTO_CRAWL: "true"
+      ANALYTICS_HEADLESS: "true"
+      ANALYTICS_CRAWLER_CONTROL_HOST: 0.0.0.0
+      ANALYTICS_CRAWLER_CONTROL_PORT: "4568"
+      ANALYTICS_DETAIL_CONCURRENCY: "2"
+      ANALYTICS_MAX_REQUESTS_PER_MINUTE: "24"
+    shm_size: 512mb
+    pids_limit: 300
+    volumes:
+      - crawler-data:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4568/health',{headers:{Authorization:'Bearer '+process.env.ANALYTICS_CRAWLER_CONTROL_TOKEN}}).then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+
+  analytics-scorer:
+    <<: *analytics-common
+    container_name: owj-analytics-scorer
+    command: ["npm", "run", "start:scorer"]
+    environment:
+      <<: *common-environment
+      ANALYTICS_PROCESS_ROLE: scorer
+      ANALYTICS_AUTO_CRAWL: "false"
+      ANALYTICS_SCORER_HEALTH_HOST: 0.0.0.0
+      ANALYTICS_SCORER_HEALTH_PORT: "4569"
+    pids_limit: 200
+    volumes:
+      - scorer-data:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4569/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 90s
+
+networks:
+  analytics-internal:
+    internal: false
+  web_app-network:
+    external: true
+    name: web_app-network
+
+volumes:
+  crawler-data:
+  scorer-data:

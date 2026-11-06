@@ -18,10 +18,12 @@ function bool(value, fallback) {
 
 export const config = {
   serviceRoot,
+  processRole: process.env.ANALYTICS_PROCESS_ROLE || "all",
   host: process.env.ANALYTICS_HOST || "127.0.0.1",
   port: integer(process.env.ANALYTICS_PORT, 4567, 1, 65535),
   mongoUri: process.env.MONGODB_URI || null,
   mongoDbName: process.env.MONGODB_DB_NAME || "owj_market_analytics",
+  mongoAutoIndex: bool(process.env.MONGODB_AUTO_INDEX, false),
   mongoRetry: {
     attempts: integer(process.env.MONGODB_RETRY_ATTEMPTS, 5, 1, 20),
     baseDelayMs: integer(process.env.MONGODB_RETRY_BASE_DELAY_MS, 1_000, 100, 60_000),
@@ -33,6 +35,15 @@ export const config = {
   neshanServiceKey: process.env.NESHAN_SERVICE_KEY || process.env.NESHAN_API_KEY || null,
   neshanNearbyRadiusMeters: integer(process.env.NESHAN_NEARBY_RADIUS_METERS, 1_500, 100, 10_000),
   neshanNearbyResultsPerLayer: integer(process.env.NESHAN_NEARBY_RESULTS_PER_LAYER, 8, 1, 20),
+  openaiApiKey: process.env.OPENAI_API_KEY || null,
+  openai: {
+    transcriptionModel: process.env.OPENAI_TRANSCRIPTION_MODEL || "gpt-4o-mini-transcribe",
+    filterModel: process.env.OPENAI_FILTER_MODEL || "gpt-5-mini",
+    realtimeModel: process.env.OPENAI_REALTIME_MODEL || "gpt-realtime-2.1-mini",
+    voice: process.env.OPENAI_VOICE || "marin",
+    timeoutMs: integer(process.env.OPENAI_TIMEOUT_MS, 30_000, 5_000, 120_000),
+    maxConcurrent: integer(process.env.OPENAI_MAX_CONCURRENT, 2, 1, 10),
+  },
   autoCrawl: bool(process.env.ANALYTICS_AUTO_CRAWL, false),
   crawlIntervalMs: integer(
     process.env.ANALYTICS_CRAWL_INTERVAL_MS,
@@ -64,6 +75,30 @@ export const config = {
       15,
       1,
       100,
+    ),
+    targetedListingsPerArea: integer(
+      process.env.ANALYTICS_TARGETED_LISTINGS_PER_AREA,
+      15,
+      1,
+      30,
+    ),
+    targetedMaxRequests: integer(
+      process.env.ANALYTICS_TARGETED_MAX_REQUESTS,
+      50,
+      10,
+      100,
+    ),
+    targetedCooldownMs: integer(
+      process.env.ANALYTICS_TARGETED_COOLDOWN_MS,
+      1_800_000,
+      60_000,
+      86_400_000,
+    ),
+    targetedQueueLimit: integer(
+      process.env.ANALYTICS_TARGETED_QUEUE_LIMIT,
+      10,
+      1,
+      50,
     ),
     maxAreas: integer(process.env.ANALYTICS_MAX_AREAS, 0, 0, 10_000),
     detailConcurrency: integer(
@@ -136,6 +171,11 @@ export const config = {
       86_400_000,
     ),
   },
+  search: {
+    maxCandidates: integer(process.env.ANALYTICS_SEARCH_MAX_CANDIDATES, 500, 50, 2_000),
+    maxConcurrent: integer(process.env.ANALYTICS_SEARCH_MAX_CONCURRENT, 4, 1, 32),
+    queryMaxTimeMs: integer(process.env.ANALYTICS_SEARCH_QUERY_MAX_TIME_MS, 2_000, 250, 10_000),
+  },
   paths: {
     data: path.join(serviceRoot, "data"),
     logs: path.join(serviceRoot, "logs"),
@@ -164,4 +204,16 @@ export const config = {
     debugArtifactDays: integer(process.env.ANALYTICS_DEBUG_ARTIFACT_DAYS, 14, 1, 365),
   },
   logLevel: process.env.ANALYTICS_LOG_LEVEL || "debug",
+  logToFile: bool(process.env.ANALYTICS_LOG_TO_FILE, true),
+  resourceLogIntervalMs: integer(process.env.ANALYTICS_RESOURCE_LOG_INTERVAL_MS, 60_000, 10_000, 3_600_000),
+  crawlerControl: {
+    host: process.env.ANALYTICS_CRAWLER_CONTROL_HOST || "127.0.0.1",
+    port: integer(process.env.ANALYTICS_CRAWLER_CONTROL_PORT, 4568, 1, 65535),
+    url: process.env.ANALYTICS_CRAWLER_CONTROL_URL || "http://127.0.0.1:4568",
+    token: process.env.ANALYTICS_CRAWLER_CONTROL_TOKEN || null,
+  },
+  scorerHealth: {
+    host: process.env.ANALYTICS_SCORER_HEALTH_HOST || "127.0.0.1",
+    port: integer(process.env.ANALYTICS_SCORER_HEALTH_PORT, 4569, 1, 65535),
+  },
 };

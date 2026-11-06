@@ -22,6 +22,7 @@ const store = new Store(config.paths, logger, {
   snapshotEvery: config.jsonSnapshotEvery,
   mongoUri: config.mongoUri,
   mongoDbName: config.mongoDbName,
+  mongoAutoIndex: config.mongoAutoIndex,
   mongoRetry: config.mongoRetry,
 });
 await store.init();
@@ -78,6 +79,16 @@ server.listen(config.port, config.host, () => {
       if (shuttingDown) return;
       const result = crawler.start();
       logger.info("service.auto-crawl", "Completion-based automatic crawl requested", result);
+      if (!result.started && result.reason === "targeted-area-job-running") {
+        const delayMs = config.crawlFailureRetryMs;
+        logger.info("service.auto-crawl.scheduled", "Full crawl deferred while a targeted area job is running", {
+          scheduleReason: "targeted-area-job-running",
+          intervalMs: delayMs,
+          nextRunAt: new Date(Date.now() + delayMs).toISOString(),
+        });
+        crawlTimer = setTimeout(() => void runAutomaticCrawl(), delayMs);
+        return;
+      }
       const state = await crawler.waitForCompletion();
       if (shuttingDown) return;
       const completed = state.status === "completed" && state.completeness?.status === "complete";

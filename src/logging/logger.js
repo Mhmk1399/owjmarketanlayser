@@ -23,7 +23,7 @@ function sanitize(value, seen = new WeakSet()) {
 }
 
 export class StructuredLogger {
-  constructor({ file, level = "info", recentLimit = 500, maxBytes = 25_000_000, archives = 5 }) {
+  constructor({ file = null, level = "info", recentLimit = 500, maxBytes = 25_000_000, archives = 5, service = "owj-market-analytics", processRole = "all" }) {
     this.file = file;
     this.level = LEVELS[level] ?? LEVELS.info;
     this.recentLimit = recentLimit;
@@ -31,9 +31,12 @@ export class StructuredLogger {
     this.writeQueue = Promise.resolve();
     this.maxBytes = maxBytes;
     this.archives = archives;
+    this.service = service;
+    this.processRole = processRole;
   }
 
   async init() {
+    if (!this.file) return;
     await fs.mkdir(path.dirname(this.file), { recursive: true });
     const stat = await fs.stat(this.file).catch((error) => error.code === "ENOENT" ? null : Promise.reject(error));
     if (stat?.size >= this.maxBytes) {
@@ -51,6 +54,8 @@ export class StructuredLogger {
     if ((LEVELS[level] ?? LEVELS.info) < this.level) return;
     const record = {
       timestamp: new Date().toISOString(),
+      service: this.service,
+      processRole: this.processRole,
       level,
       event,
       message,
@@ -60,10 +65,12 @@ export class StructuredLogger {
     if (this.recent.length > this.recentLimit) this.recent.shift();
     const line = `${JSON.stringify(record)}\n`;
     const output = level === "error" ? console.error : level === "warn" ? console.warn : console.log;
-    output(`[${record.timestamp}] [${level.toUpperCase()}] [${event}] ${message}`, sanitize(context));
-    this.writeQueue = this.writeQueue
-      .then(() => fs.appendFile(this.file, line, "utf8"))
-      .catch((error) => console.error(`[LOGGER] ${error.message}`));
+    output(line.trimEnd());
+    if (this.file) {
+      this.writeQueue = this.writeQueue
+        .then(() => fs.appendFile(this.file, line, "utf8"))
+        .catch((error) => console.error(JSON.stringify({ timestamp: new Date().toISOString(), level: "error", event: "logger.failure", error: error.message })));
+    }
   }
 
   debug(event, message, context) { this.log("debug", event, message, context); }

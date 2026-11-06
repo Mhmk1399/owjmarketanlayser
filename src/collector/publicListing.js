@@ -517,6 +517,7 @@ export async function crawlPublicListing(
     apiFetcher = fetchPublicPostDocument,
     apiRequestContext = null,
     htmlExtractor = extractPublicHtmlListing,
+    allowHtmlFallback = true,
   } = {},
 ) {
   const apiStartedAt = Date.now();
@@ -551,6 +552,7 @@ export async function crawlPublicListing(
 
     // Do not turn an explicit platform-limit response into another request.
     if (apiError.status === 403 || apiError.status === 429) throw apiError;
+    if (!allowHtmlFallback) throw apiError;
 
     const htmlStartedAt = Date.now();
     try {

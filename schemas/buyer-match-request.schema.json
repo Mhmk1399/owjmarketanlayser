@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://owj.local/schemas/buyer-match-request.schema.json",
+  "title": "Owj anonymous buyer matching request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["requirement"],
+  "properties": {
+    "requirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transactionType"],
+      "properties": {
+        "transactionType": { "enum": ["buy", "rent"] },
+        "propertyTypes": { "$ref": "#/$defs/stringList" },
+        "locations": { "$ref": "#/$defs/stringList" },
+        "minPrice": { "$ref": "#/$defs/nullableAmount" },
+        "maxPrice": { "$ref": "#/$defs/nullableAmount" },
+        "minDeposit": { "$ref": "#/$defs/nullableAmount" },
+        "maxDeposit": { "$ref": "#/$defs/nullableAmount" },
+        "minRent": { "$ref": "#/$defs/nullableAmount" },
+        "maxRent": { "$ref": "#/$defs/nullableAmount" },
+        "minArea": { "$ref": "#/$defs/nullableAmount" },
+        "maxArea": { "$ref": "#/$defs/nullableAmount" },
+        "minRooms": { "$ref": "#/$defs/nullableAmount" },
+        "maxBuildingAge": { "$ref": "#/$defs/nullableAmount" },
+        "requiredAmenities": { "$ref": "#/$defs/amenities" },
+        "optionalAmenities": { "$ref": "#/$defs/amenities" },
+        "urgency": { "enum": ["low", "normal", "high", "immediate"] },
+        "financingStatus": { "enum": ["unknown", "ready", "needs_financing", "not_ready"] }
+      }
+    },
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "limit": { "type": "integer", "minimum": 1, "maximum": 50 },
+        "cursor": { "type": ["string", "null"], "maxLength": 500 }
+      }
+    }
+  },
+  "$defs": {
+    "nullableAmount": { "type": ["number", "null"], "minimum": 0 },
+    "stringList": {
+      "type": "array",
+      "maxItems": 30,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 120 }
+    },
+    "amenities": {
+      "type": "array",
+      "maxItems": 14,
+      "uniqueItems": true,
+      "items": {
+        "enum": ["elevator", "parking", "storage", "balcony", "rooftop", "lobby", "doorman", "security", "pool", "sauna", "gym", "centralAntenna", "airConditioning", "heating"]
+      }
+    }
+  }
+}
