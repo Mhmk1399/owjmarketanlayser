@@ -28,6 +28,10 @@ async function scheduleCrawls() {
   if (!config.autoCrawl || stopping) return;
   const result = crawler.start();
   logger.info("service.auto-crawl", "Automatic crawl requested", result);
+  if (!result.started && result.reason === "targeted-area-job-running") {
+    crawlTimer = setTimeout(() => void scheduleCrawls(), config.crawlFailureRetryMs);
+    return;
+  }
   const state = await crawler.waitForCompletion();
   if (stopping) return;
   const completed = state.status === "completed" && state.completeness?.status === "complete";

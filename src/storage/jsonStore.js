@@ -3,6 +3,7 @@ import path from "node:path";
 import { resolveListingLocation } from "../locations/hierarchy.js";
 import { nextLifecycleStatus } from "../collector/listingPolicy.js";
 import { classifyAdvertiser } from "../collector/advertiserClassifier.js";
+import { listingActivities, lifecycleActivities } from "../collector/listingHistory.js";
 
 async function readJson(file, fallback) {
   try {
@@ -186,6 +187,7 @@ export class JsonMarketStore {
         lastConfirmedRunId: runId,
         consecutiveMisses: 0,
         removedAt: null,
+        lastReconciledCycleId: existing?.lifecycle?.lastReconciledCycleId || null,
       },
     };
     this.listings.set(listing.token, merged);
@@ -193,18 +195,21 @@ export class JsonMarketStore {
     this.writeQueue = this.writeQueue.then(async () => {
       const token = safeToken(listing.token);
       await writeJsonAtomic(path.join(this.paths.listingRecords, `${token}.json`), merged);
-      if (changed) {
+      {
         const observationFile = path.join(this.paths.observations, `${token}.json`);
         const history = await readJson(observationFile, {
           schemaVersion: "1.0.0",
           token,
           observations: [],
         });
-        history.observations.push({
+        if (changed) history.observations.push({
           observedAt: listing.lastSeenAt,
           runId,
           listing: merged,
         });
+        const activities = new Map((history.activities || []).map((event) => [event.eventId, event]));
+        for (const event of listingActivities(existing, merged, runId)) activities.set(event.eventId, event);
+        history.activities = [...activities.values()].slice(-500);
         await writeJsonAtomic(observationFile, history);
       }
       this.pendingSnapshotChanges += 1;
@@ -216,11 +221,30 @@ export class JsonMarketStore {
     return { listing: merged, changed, existed: Boolean(existing) };
   }
 
+  async listingHistory(token, { limit = 50, before = null } = {}) {
+    const history = await readJson(path.join(this.paths.observations, `${safeToken(token)}.json`), { activities: [] });
+    return (history.activities || []).filter((event) => !before || Date.parse(event.observedAt) < Date.parse(before))
+      .sort((a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt))
+      .slice(0, Math.min(100, limit));
+  }
+
+  async listingObservations(token, { limit = 50, before = null } = {}) {
+    const history = await readJson(path.join(this.paths.observations, `${safeToken(token)}.json`), { observations: [] });
+    return (history.observations || []).filter((item) => !before || Date.parse(item.observedAt) < Date.parse(before))
+      .sort((a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt)).slice(0, Math.min(100, limit))
+      .map((item) => ({ token, observedAt: item.observedAt, type: "legacy-observation",
+        contentFingerprint: item.listing?.contentFingerprint,
+        price: item.listing?.pricing?.price ?? null,
+        pricePerMeter: item.listing?.pricing?.pricePerMeter ?? null,
+        publication: item.listing?.publication ?? null }));
+  }
+
   async confirmListingSeen(token, runId, observedAt = new Date().toISOString()) {
     const existing = this.listings.get(token);
     if (!existing) return null;
     const merged = {
       ...existing,
+      lastSeenAt: observedAt,
       lifecycle: {
         ...existing.lifecycle,
         status: "active",
@@ -231,9 +255,15 @@ export class JsonMarketStore {
       },
     };
     this.listings.set(token, merged);
-    this.writeQueue = this.writeQueue.then(() => writeJsonAtomic(
-      path.join(this.paths.listingRecords, `${safeToken(token)}.json`), merged,
-    ));
+    this.writeQueue = this.writeQueue.then(async () => {
+      await writeJsonAtomic(path.join(this.paths.listingRecords, `${safeToken(token)}.json`), merged);
+      const file = path.join(this.paths.observations, `${safeToken(token)}.json`);
+      const history = await readJson(file, { schemaVersion: "1.0.0", token, observations: [] });
+      const activities = new Map((history.activities || []).map((event) => [event.eventId, event]));
+      for (const event of listingActivities(existing, merged, runId, { confirmationOnly: true, observedAt })) activities.set(event.eventId, event);
+      history.activities = [...activities.values()].slice(-500);
+      await writeJsonAtomic(file, history);
+    });
     await this.writeQueue;
     return merged;
   }
@@ -256,19 +286,26 @@ export class JsonMarketStore {
     const summary = { active: 0, notSeen: 0, possiblyRemoved: 0, removed: 0 };
     for (const [token, listing] of this.listings) {
       const areaId = Number(listing.crawlPartition?.area?.id);
-      if (!completed.has(areaId) || observed.has(token)) continue;
+      if (!completed.has(areaId) || observed.has(token) || listing.lifecycle?.lastReconciledCycleId === runId) continue;
       const misses = (listing.lifecycle?.consecutiveMisses || 0) + 1;
       const status = nextLifecycleStatus(misses, removalThreshold);
       const merged = { ...listing, lifecycle: {
         ...listing.lifecycle, status, consecutiveMisses: misses,
         removedAt: status === "removed" ? listing.lifecycle?.removedAt || now : null,
         lastConfirmedRunId: listing.lifecycle?.lastConfirmedRunId ?? null,
+        lastReconciledCycleId: runId,
       } };
       this.listings.set(token, merged);
       summary[status === "not-seen" ? "notSeen" : status === "possibly-removed" ? "possiblyRemoved" : status] += 1;
-      this.writeQueue = this.writeQueue.then(() => writeJsonAtomic(
-        path.join(this.paths.listingRecords, `${safeToken(token)}.json`), merged,
-      ));
+      this.writeQueue = this.writeQueue.then(async () => {
+        await writeJsonAtomic(path.join(this.paths.listingRecords, `${safeToken(token)}.json`), merged);
+        const file = path.join(this.paths.observations, `${safeToken(token)}.json`);
+        const history = await readJson(file, { schemaVersion: "1.0.0", token, observations: [] });
+        const events = new Map((history.activities || []).map((event) => [event.eventId, event]));
+        for (const event of lifecycleActivities(listing, merged, runId, now)) events.set(event.eventId, event);
+        history.activities = [...events.values()].slice(-500);
+        await writeJsonAtomic(file, history);
+      });
     }
     await this.writeQueue;
     return summary;

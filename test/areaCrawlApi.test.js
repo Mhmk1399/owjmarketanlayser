@@ -46,3 +46,28 @@ test("area crawl API starts and reports a bounded neighborhood job", async (t) =
   });
   assert.equal(invalid.status, 400);
 });
+
+test("collection history API returns bounded timelines and keeps candidate identity unresolved", async (t) => {
+  const server = createAnalyticsServer({
+    config: { paths: {} }, analytics: {}, crawler: {},
+    store: {
+      async listingHistory(token, options) {
+        assert.equal(token, "sample-ad");
+        assert.equal(options.limit, 100);
+        return [{ token, type: "new-listing" }];
+      },
+      async listingObservations() { return [{ type: "created", price: 1000 }]; },
+      async propertyLinks() { return [{ status: "candidate", relation: "repost" }]; },
+    },
+    logger: { info() {}, error() {} },
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const response = await fetch(`${origin}/listings/sample-ad/history?limit=10000`);
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.propertyIdentity, "unresolved");
+  assert.equal(body.observations[0].price, 1000);
+  assert.equal((await fetch(`${origin}/listings/sample-ad/history?before=not-a-date`)).status, 400);
+});

@@ -52,6 +52,8 @@ test("JSON store advances lifecycle only for exhaustively observed areas", async
       lastConfirmedRunId: "seed", lastContentChangedAt: "2026-01-01T00:00:00.000Z", consecutiveMisses: 0, removedAt: null } }, "seed");
   for (let run = 1; run <= 3; run += 1) {
     await store.reconcileLifecycle({ runId: `run-${run}`, observedTokens: [], completedAreaIds: [992], removalThreshold: 3 });
+    await store.reconcileLifecycle({ runId: `run-${run}`, observedTokens: [], completedAreaIds: [992], removalThreshold: 3 });
+    assert.equal(store.getListing("life-one").lifecycle.consecutiveMisses, run);
   }
   assert.equal(store.getListing("life-one").lifecycle.status, "removed");
   assert.equal(store.getListings({ activeOnly: true }).length, 0);

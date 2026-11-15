@@ -37,6 +37,7 @@ const lifecycleSchema = new Schema({
   status: { type: String, required: true, enum: ["active", "not-seen", "possibly-removed", "removed"] },
   detailFetchedAt: nullable(Date), lastDiscoveredAt: nullable(Date), lastConfirmedRunId: nullable(String),
   lastContentChangedAt: nullable(Date), consecutiveMisses: { type: Number, required: true, min: 0 }, removedAt: nullable(Date),
+  lastReconciledCycleId: nullable(String),
 }, strict);
 const nearbyPlaceSchema = new Schema({
   category: { type: String, required: true, enum: ["bus-station", "metro-station"] },
@@ -89,6 +90,7 @@ export const listingSchema = new Schema({
 }, { strict: "throw", versionKey: false, minimize: false });
 
 listingSchema.index({ token: 1 }, { unique: true });
+listingSchema.index({ "images.url": 1, subcategory: 1, "property.area": 1 }, { name: "public_property_link_candidates" });
 listingSchema.index({ subcategory: 1, neighborhood: 1, "pricing.price": 1 });
 listingSchema.index({ "resolvedLocation.neighborhoodId": 1, lastSeenAt: -1 });
 listingSchema.index({ "lifecycle.status": 1, "quality.outcome": 1, lastSeenAt: -1 });

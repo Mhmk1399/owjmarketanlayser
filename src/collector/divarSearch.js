@@ -109,6 +109,7 @@ export async function fetchApartmentAreaListings(
         },
       });
     } catch (error) {
+      if (["request-budget-exhausted", "crawl-lease-lost"].includes(error.code)) throw error;
       throw new DivarPublicSearchError(`Divar area search request failed: ${error.message}`, {
         code: "request-failed",
       });

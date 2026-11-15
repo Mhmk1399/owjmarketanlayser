@@ -11,6 +11,10 @@ import { nextLifecycleStatus } from "../collector/listingPolicy.js";
 import { withMongoRetry } from "./mongoRetry.js";
 import { persistScoringGeneration, promoteModel, rollbackModel } from "../scoring/modelRegistry.js";
 import { normalizeListingPage } from "./listingPagination.js";
+import { DurableCrawlQueue } from "../collector/durableCrawlQueue.js";
+import { ListingActivity } from "../models/listingActivity.js";
+import { listingActivities, lifecycleActivities, possiblePropertyLink } from "../collector/listingHistory.js";
+import { ListingPropertyLink } from "../models/listingPropertyLink.js";
 import {
   buildBuyerMongoFilter,
   criteriaFingerprint,
@@ -35,6 +39,8 @@ export class MongoMarketStore extends JsonMarketStore {
     mongoRetry = {},
     mongoAutoIndex = false,
     reconcileCrawlerState = true,
+    activityModel = ListingActivity,
+    propertyLinkModel = ListingPropertyLink,
   } = {}) {
     super(paths, logger, { snapshotEvery });
     this.mongoUri = mongoUri;
@@ -53,6 +59,9 @@ export class MongoMarketStore extends JsonMarketStore {
     this.mongoAutoIndex = mongoAutoIndex;
     this.reconcileCrawlerState = reconcileCrawlerState;
     this.mongo = null;
+    this.crawlQueue = new DurableCrawlQueue();
+    this.activityModel = activityModel;
+    this.propertyLinkModel = propertyLinkModel;
   }
 
   async mongoOperation(label, operation) {
@@ -83,6 +92,9 @@ export class MongoMarketStore extends JsonMarketStore {
       this.modelVersionModel.init(), this.trainingRunModel.init(),
       this.listingScoreModel.init(), this.driftMetricModel.init(),
       this.buyerRequirementModel.init(),
+      this.crawlQueue.init(),
+      this.activityModel.init(),
+      this.propertyLinkModel.init(),
     ]);
     const documents = await this.listingModel.find({}).batchSize(1000).lean();
     this.listings.clear();
@@ -267,8 +279,80 @@ export class MongoMarketStore extends JsonMarketStore {
     return merged;
   }
 
+  async loadListing(token) {
+    if (!this.mongo) return this.getListing(token);
+    const document = await this.listingModel.findOne({ token }).lean();
+    if (!document) return null;
+    const { _id, ...listing } = plain(document);
+    this.listings.set(token, listing);
+    return listing;
+  }
+
+  async writeListingActivities(events, session = null) {
+    // Unit-store adapters without a connection can inject their own activity
+    // model. In production these writes share the listing transaction.
+    if (!events.length || (!this.mongo && this.activityModel === ListingActivity)) return;
+    await this.activityModel.bulkWrite(events.map((event) => ({ updateOne: {
+      filter: { eventId: event.eventId }, update: { $setOnInsert: event }, upsert: true,
+    } })), { ordered: false, ...(session ? { session } : {}) });
+  }
+
+  async listingHistory(token, { limit = 50, before = null } = {}) {
+    return this.activityModel.find({ token, ...(before ? { observedAt: { $lt: before } } : {}) })
+      .select({ _id: 0 }).sort({ observedAt: -1, eventId: 1 }).limit(Math.min(100, limit)).lean();
+  }
+
+  async listingObservations(token, { limit = 50, before = null } = {}) {
+    const documents = await this.observationModel.find({ token, ...(before ? { observedAt: { $lt: before } } : {}) })
+      .select({ _id: 0, token: 1, observedAt: 1, eventType: 1, contentFingerprint: 1,
+        "snapshot.pricing": 1, "snapshot.publication": 1 })
+      .sort({ observedAt: -1 }).limit(Math.min(100, limit)).lean();
+    return documents.map((item) => ({
+      token: item.token, observedAt: item.observedAt, type: item.eventType,
+      contentFingerprint: item.contentFingerprint,
+      price: item.snapshot?.pricing?.price ?? null,
+      pricePerMeter: item.snapshot?.pricing?.pricePerMeter ?? null,
+      publication: item.snapshot?.publication ?? null,
+    }));
+  }
+
+  async propertyLinks(token, { limit = 20 } = {}) {
+    return this.propertyLinkModel.find({ tokens: token }).select({ _id: 0 })
+      .sort({ updatedAt: -1 }).limit(Math.min(50, limit)).lean();
+  }
+
+  async collectionSummary(since) {
+    const [events, links] = await Promise.all([
+      this.activityModel.aggregate([
+        { $match: { observedAt: { $gte: since } } },
+        { $group: { _id: { type: "$type", token: "$token" }, observations: { $sum: 1 } } },
+        { $group: { _id: "$_id.type", advertisements: { $sum: 1 }, observations: { $sum: "$observations" } } },
+      ]).option({ maxTimeMS: 5_000 }),
+      this.propertyLinkModel.aggregate([
+        { $match: { updatedAt: { $gte: since } } },
+        { $group: { _id: { status: "$status", relation: "$relation" }, count: { $sum: 1 } } },
+      ]).option({ maxTimeMS: 5_000 }),
+    ]);
+    return { since, events, links, verifiedUniqueApartmentCount: null,
+      identityStatus: "unresolved-unless-independently-verified", historySource: "listing-activities-since-rollout" };
+  }
+
+  async recordPossiblePropertyLinks(listing) {
+    if (!this.mongo || (listing.images || []).length < 2) return;
+    const candidates = await this.listingModel.find({
+      token: { $ne: listing.token }, subcategory: listing.subcategory,
+      "property.area": listing.property?.area,
+      "images.url": { $in: listing.images.slice(0, 20).map((image) => image.url) },
+    }).select({ token: 1, subcategory: 1, property: 1, "images.url": 1, lifecycle: 1 })
+      .limit(10).maxTimeMS(2_000).lean();
+    const links = candidates.map((candidate) => possiblePropertyLink(listing, candidate)).filter(Boolean);
+    if (links.length) await this.propertyLinkModel.bulkWrite(links.map((link) => ({ updateOne: {
+      filter: { linkId: link.linkId }, update: { $setOnInsert: link }, upsert: true,
+    } })), { ordered: false });
+  }
+
   async upsertListing(listing, runId) {
-    const existing = this.listings.get(listing.token);
+    const existing = await this.loadListing(listing.token);
     const changed = !existing || existing.contentFingerprint !== listing.contentFingerprint;
     const merged = {
       ...listing,
@@ -281,6 +365,7 @@ export class MongoMarketStore extends JsonMarketStore {
         lastConfirmedRunId: runId,
         consecutiveMisses: 0,
         removedAt: null,
+        lastReconciledCycleId: existing?.lifecycle?.lastReconciledCycleId || null,
       },
     };
     const observation = changed ? {
@@ -306,6 +391,7 @@ export class MongoMarketStore extends JsonMarketStore {
         { $setOnInsert: observation },
         { upsert: true, runValidators: true, ...(session ? { session } : {}) },
       );
+      await this.writeListingActivities(listingActivities(existing, merged, runId), session);
     };
     await this.mongoOperation("listing.upsert", async () => {
       if (this.mongo?.connection?.transaction) {
@@ -313,14 +399,20 @@ export class MongoMarketStore extends JsonMarketStore {
       } else await persist();
     });
     this.listings.set(merged.token, plain(merged));
+    if (!existing) await this.recordPossiblePropertyLinks(merged).catch((error) => {
+      this.logger.warn("listing.property-link.deferred", "Possible property link lookup failed; listing remains identity-unresolved", {
+        token: merged.token, errorCode: error.code || "property-link-query-failed",
+      });
+    });
     return { listing: plain(merged), changed, existed: Boolean(existing) };
   }
 
   async confirmListingSeen(token, runId, observedAt = new Date().toISOString()) {
-    const existing = this.listings.get(token);
+    const existing = await this.loadListing(token);
     if (!existing) return null;
     const merged = {
       ...existing,
+      lastSeenAt: observedAt,
       lifecycle: {
         ...existing.lifecycle,
         status: "active",
@@ -330,7 +422,14 @@ export class MongoMarketStore extends JsonMarketStore {
         removedAt: null,
       },
     };
-    await this.listingModel.replaceOne({ token }, merged, { upsert: false, runValidators: true });
+    const persist = async (session = null) => {
+      await this.listingModel.updateOne({ token }, { $set: { lifecycle: merged.lifecycle, lastSeenAt: observedAt } }, {
+        runValidators: true, ...(session ? { session } : {}),
+      });
+      await this.writeListingActivities(listingActivities(existing, merged, runId, { confirmationOnly: true, observedAt }), session);
+    };
+    if (this.mongo?.connection?.transaction) await this.mongo.connection.transaction(persist);
+    else await persist();
     this.listings.set(token, plain(merged));
     return plain(merged);
   }
@@ -342,22 +441,38 @@ export class MongoMarketStore extends JsonMarketStore {
     const changes = [];
     for (const [token, listing] of this.listings) {
       const areaId = Number(listing.crawlPartition?.area?.id);
-      if (!completed.has(areaId) || observed.has(token)) continue;
+      if (!completed.has(areaId) || observed.has(token) || listing.lifecycle?.lastReconciledCycleId === runId) continue;
       const misses = (listing.lifecycle?.consecutiveMisses || 0) + 1;
       const status = nextLifecycleStatus(misses, removalThreshold);
       const merged = { ...listing, lifecycle: {
         ...listing.lifecycle, status, consecutiveMisses: misses,
         removedAt: status === "removed" ? listing.lifecycle?.removedAt || now : null,
         lastConfirmedRunId: listing.lifecycle?.lastConfirmedRunId ?? null,
+        lastReconciledCycleId: runId,
       } };
-      changes.push({ token, merged });
-      summary[status === "not-seen" ? "notSeen" : status === "possibly-removed" ? "possiblyRemoved" : status] += 1;
+      changes.push({ token, merged, previous: listing });
     }
     if (changes.length) {
-      await this.listingModel.bulkWrite(changes.map(({ token, merged }) => ({
-        replaceOne: { filter: { token }, replacement: merged, upsert: false },
-      })), { ordered: false });
-      for (const { token, merged } of changes) this.listings.set(token, plain(merged));
+      for (const { token, merged, previous } of changes) {
+        let matched = false;
+        const persist = async (session = null) => {
+          const result = await this.listingModel.updateOne({
+            token, "lifecycle.lastReconciledCycleId": { $ne: runId },
+            "lifecycle.lastConfirmedRunId": { $ne: runId },
+            "lifecycle.consecutiveMisses": previous.lifecycle?.consecutiveMisses || 0,
+            "lifecycle.lastDiscoveredAt": previous.lifecycle?.lastDiscoveredAt || null,
+          }, { $set: { lifecycle: merged.lifecycle } }, { runValidators: true, ...(session ? { session } : {}) });
+          matched = Boolean(result.matchedCount);
+          if (matched) await this.writeListingActivities(lifecycleActivities(previous, merged, runId, now), session);
+        };
+        if (this.mongo?.connection?.transaction) await this.mongo.connection.transaction(persist);
+        else await persist();
+        if (matched) {
+          this.listings.set(token, plain(merged));
+          const status = merged.lifecycle.status;
+          summary[status === "not-seen" ? "notSeen" : status === "possibly-removed" ? "possiblyRemoved" : status] += 1;
+        }
+      }
     }
     return summary;
   }

@@ -1058,7 +1058,9 @@ export default function LocationExplorer({ slug = "iran" }) {
                             {areaJob.error || (jobSucceeded
                               ? `${formatNumber(areaJob.job.successful)} آگهی بررسی شد؛ ${formatNumber(areaJob.job.newListings)} مورد تازه بود.`
                               : areaJob.job?.status === "queued"
-                                ? "پس از پایان محله جاری، این محله بررسی می‌شود."
+                                ? areaJob.job.stage === "enrichment"
+                                  ? "اطلاعات فایل‌های موجود پس از کشف محله‌ها و فایل‌های تازه تکمیل می‌شود."
+                                  : "درخواست با اولویت در صف ذخیره شده است؛ وضعیت به‌روزرسانی می‌شود."
                               : jobRunning && areaJob.job
                                 ? `${formatNumber(areaJob.job.processed)} از ${formatNumber(areaJob.job.discovered)} آگهی بررسی شده است.`
                                 : "")}

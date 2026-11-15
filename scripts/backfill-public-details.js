@@ -122,7 +122,7 @@ try {
     .map(({ _id, ...listing }) => JSON.parse(JSON.stringify(listing)));
   const candidates = documents.filter((listing) => refreshAll
     ? true
-    : needsPublicDetailBackfill(listing)
+    : needsPublicDetailBackfill(listing))
     .filter((listing) => retryTerminal || !["not-found", "gone"].includes(state.attempted[listing.token]?.status));
   const queue = limit > 0 ? candidates.slice(0, limit) : candidates;
   process.stdout.write(`${JSON.stringify({ event: "backfill-start", mode: refreshAll ? "all" : "missing-public-details", candidates: candidates.length, queued: queue.length, intervalMs, concurrency })}\n`);

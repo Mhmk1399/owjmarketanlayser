@@ -277,6 +277,7 @@
         "detailFetchedAt": { "type": ["string", "null"], "format": "date-time" },
         "lastDiscoveredAt": { "type": ["string", "null"], "format": "date-time" },
         "lastConfirmedRunId": { "type": ["string", "null"] },
+        "lastReconciledCycleId": { "type": ["string", "null"] },
         "lastContentChangedAt": { "type": ["string", "null"], "format": "date-time" },
         "consecutiveMisses": { "type": "integer", "minimum": 0 },
         "removedAt": { "type": ["string", "null"], "format": "date-time" }

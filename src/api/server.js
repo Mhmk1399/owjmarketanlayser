@@ -756,6 +756,40 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
         return sendJson(response, 200, { schemaVersion: "1.0.0", total: runs.length, runs });
       }
 
+      if (request.method === "GET" && url.pathname === "/crawl-coverage") {
+        const areas = store.crawlQueue ? await store.crawlQueue.coverage() : [];
+        return sendJson(response, 200, {
+          schemaVersion: "1.0.0", storage: store.crawlQueue ? "mongodb" : "legacy-json",
+          configuredAreas: 168, attemptedAreas: areas.filter((area) => area.lastAttemptAt).length, areas,
+          note: "Discovery completion is not proof of exhaustive market coverage; inspect stopReason.",
+        });
+      }
+
+      if (request.method === "GET" && url.pathname === "/collection-summary") {
+        if (!store.collectionSummary) return sendJson(response, 503, { error: "mongodb-required" });
+        const since = new Date(url.searchParams.get("since") || Date.now() - 86_400_000);
+        if (!Number.isFinite(since.getTime())) return sendJson(response, 400, { error: "invalid-summary-date" });
+        return sendJson(response, 200, { schemaVersion: "1.0.0", ...await store.collectionSummary(since) });
+      }
+
+      const historyMatch = url.pathname.match(/^\/listings\/([A-Za-z0-9_-]+)\/history$/);
+      if (request.method === "GET" && historyMatch) {
+        const limit = numberParam(url.searchParams.get("limit"), 50, 1, 100);
+        const rawBefore = url.searchParams.get("before");
+        const before = rawBefore ? new Date(rawBefore) : null;
+        if (before && !Number.isFinite(before.getTime())) return sendJson(response, 400, { error: "invalid-history-date" });
+        const [events, observations, propertyLinks] = await Promise.all([
+          store.listingHistory(historyMatch[1], { limit, before }),
+          typeof store.listingObservations === "function" ? store.listingObservations(historyMatch[1], { limit, before }) : [],
+          typeof store.propertyLinks === "function" ? store.propertyLinks(historyMatch[1]) : [],
+        ]);
+        return sendJson(response, 200, {
+          schemaVersion: "1.0.0", token: historyMatch[1], events, observations, propertyLinks,
+          propertyIdentity: propertyLinks.some((link) => link.status === "confirmed") ? "has-verified-links" : "unresolved",
+          note: "New listing events count source advertisements, not verified unique properties. Candidate links are not confirmed reposts.",
+        });
+      }
+
       if (request.method === "GET" && url.pathname === "/listings") {
         const { offset, limit } = normalizeListingPage({
           offset: url.searchParams.get("offset") ?? undefined,
@@ -991,6 +1025,9 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
           "POST /area-crawl-jobs",
           "GET /area-crawl-jobs/:jobId",
           "GET /crawl-runs",
+          "GET /crawl-coverage",
+          "GET /collection-summary",
+          "GET /listings/:token/history",
           "GET /listings",
           "GET /listings/:token/analysis",
           "GET /areas",

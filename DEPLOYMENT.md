@@ -44,6 +44,16 @@ Ensure Atlas allows `109.122.247.27/32` before starting the services.
 
 ## Load and start
 
+For the collection/history release, run the additive migration from the new
+image before starting the new processes (with the shared database environment):
+
+```bash
+docker compose -f compose.production.yaml run --rm --no-deps analytics-crawler npm run migrate:crawl-jobs -- --apply
+```
+
+See `COLLECTION_HISTORY.md` for the checkpoint/lease and rollback contract. Do
+not start old and new crawler versions together.
+
 ```bash
 cd /opt/apps/analytics
 chmod +x load-offline-image.sh

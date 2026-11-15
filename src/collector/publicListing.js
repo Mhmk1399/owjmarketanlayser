@@ -353,6 +353,9 @@ export function toPublicMarketListing(
     title: redactContactText(normalized.title),
     description: safeDescription(normalized.description),
     images: Array.isArray(normalized.images) ? normalized.images.map(safeImage).filter(Boolean) : [],
+    nearbyPlaces: existing?.coordinates?.latitude === normalized.coordinates?.latitude
+      && existing?.coordinates?.longitude === normalized.coordinates?.longitude
+      ? existing?.nearbyPlaces || [] : [],
     attributes: Array.isArray(normalized.attributes) ? normalized.attributes.map(({ key, label, value }) => ({
       key: String(key), label: safeText(label, 200), value: safeText(value, 500),
     })).filter((item) => Object.values(ATTRIBUTE_ALLOWLIST).includes(item.key) && item.label && item.value) : [],

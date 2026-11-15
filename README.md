@@ -1,5 +1,12 @@
 # Owj Market Analytics
 
+Collection/history phase 1 now uses MongoDB-backed resumable neighborhood jobs,
+separate discovery/detail/refresh priorities, and advertisement activity history.
+See [COLLECTION_HISTORY.md](COLLECTION_HISTORY.md) for migration, API contracts,
+resource limits, verification and rollback. Run `npm run migrate:crawl-jobs --
+--apply` before starting the updated services with MongoDB. JSON-only operation
+retains the legacy scheduler.
+
 Public-only, live/incremental market analytics for the Owj crawler repository.
 
 This service currently:

@@ -1,5 +1,10 @@
 # Market Analytics Crawler Enhancement Plan
 
+The Done entries below describe the original fourteen-step implementation.
+The newer [apartment service roadmap](SERVICE_ROADMAP.md) and
+[collection/history contract](COLLECTION_HISTORY.md) distinguish delivered
+durable scheduling from pending production-soak and later service work.
+
 This plan keeps the service public-only. No task may introduce contact-number collection, authenticated Divar requests, bot credentials, or contact endpoints.
 
 ## Scope decision
