@@ -12,6 +12,46 @@ import {
 } from "./statistics.js";
 
 export const SCORING_VERSION = "similarity-adjusted-value-score-v3";
+const COMPARABLE_GRID_DEGREES = 0.025;
+
+function comparableCell(latitude, longitude) {
+  return `${Math.floor(latitude / COMPARABLE_GRID_DEGREES)}:${Math.floor(longitude / COMPARABLE_GRID_DEGREES)}`;
+}
+
+export function createComparableIndex(records) {
+  const cells = new Map();
+  records.forEach((record, index) => {
+    const key = comparableCell(record.location.latitude, record.location.longitude);
+    if (!cells.has(key)) cells.set(key, []);
+    cells.get(key).push({ index, record });
+  });
+  const metrics = { candidateChecks: 0, exhaustiveChecks: records.length ** 2 };
+  return {
+    metrics,
+    candidatesFor(subject) {
+      const latitudeWindow = 5_000 / 111_000;
+      const cosine = Math.cos(subject.location.latitude * Math.PI / 180);
+      const longitudeWindow = Math.abs(cosine) > 1e-6 ? 5_000 / (111_000 * cosine) : 360;
+      if (longitudeWindow >= 180) {
+        metrics.candidateChecks += records.length;
+        return records;
+      }
+      const minLatitude = Math.floor((subject.location.latitude - latitudeWindow) / COMPARABLE_GRID_DEGREES);
+      const maxLatitude = Math.floor((subject.location.latitude + latitudeWindow) / COMPARABLE_GRID_DEGREES);
+      const minLongitude = Math.floor((subject.location.longitude - longitudeWindow) / COMPARABLE_GRID_DEGREES);
+      const maxLongitude = Math.floor((subject.location.longitude + longitudeWindow) / COMPARABLE_GRID_DEGREES);
+      const candidates = [];
+      for (let latitude = minLatitude; latitude <= maxLatitude; latitude += 1) {
+        for (let longitude = minLongitude; longitude <= maxLongitude; longitude += 1) {
+          candidates.push(...(cells.get(`${latitude}:${longitude}`) || []));
+        }
+      }
+      candidates.sort((left, right) => left.index - right.index);
+      metrics.candidateChecks += candidates.length;
+      return candidates.map(({ record }) => record);
+    },
+  };
+}
 
 function similarityScore(subject, candidate, distanceMeters) {
   const exponential = (difference, scale) => Math.exp(-Math.abs(difference) / scale);
@@ -264,13 +304,18 @@ export function scoreListings(
   records,
   crossValidatedPredictions,
   model,
-  { onEvent = () => {} } = {},
+  { onEvent = () => {}, useComparableIndex = true } = {},
 ) {
+  const comparableIndex = useComparableIndex ? createComparableIndex(records) : null;
   const actualPpm = records.map((listing) => listing.pricing.askingPricePerMeter);
   const predictionMinimum = quantile(actualPpm, 0.01);
   const predictionMaximum = quantile(actualPpm, 0.99);
   const preliminary = records.map((listing, index) => {
-    const local = localEvidence(listing, records, crossValidatedPredictions);
+    const local = localEvidence(
+      listing,
+      comparableIndex ? comparableIndex.candidatesFor(listing) : records,
+      crossValidatedPredictions,
+    );
     const rawModelPrediction = crossValidatedPredictions.get(listing.token);
     const modelPricePerMeter = Math.round(clamp(
       rawModelPrediction,
@@ -302,6 +347,19 @@ export function scoreListings(
       hybridDiscountPct,
     };
   });
+
+  if (comparableIndex) {
+    const { candidateChecks, exhaustiveChecks } = comparableIndex.metrics;
+    onEvent({
+      type: "score.comparable-index.complete",
+      recordCount: records.length,
+      candidateChecks,
+      exhaustiveChecks,
+      reductionPercent: exhaustiveChecks
+        ? Number(((1 - candidateChecks / exhaustiveChecks) * 100).toFixed(2))
+        : 0,
+    });
+  }
 
   const modelDiscounts = preliminary.map((item) => item.modelDiscountPct).sort((a, b) => a - b);
   const nearbyDiscounts = preliminary.map((item) => item.nearbyDiscountPct).sort((a, b) => a - b);

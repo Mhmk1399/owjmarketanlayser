@@ -5,6 +5,9 @@ import os from "node:os";
 import { randomUUID } from "node:crypto";
 import { createAnalyticsServer } from "../src/api/server.js";
 
+const analystToken = "test-analyst-token-00000000000000000";
+const analystHeaders = { authorization: `Bearer ${analystToken}` };
+
 test("data quality navigation serves the app while JSON clients retain their API", async (t) => {
   const directory = path.join(os.tmpdir(), `owj-navigation-${randomUUID()}`);
   const server = createAnalyticsServer({
@@ -13,6 +16,7 @@ test("data quality navigation serves the app while JSON clients retain their API
         scoredListings: path.join(directory, "scored-listings.json"),
         scoringReport: path.join(directory, "scoring-report.json"),
       },
+      security: { analystToken },
     },
     store: { getListings: () => [] },
     analytics: {},
@@ -23,13 +27,17 @@ test("data quality navigation serves the app while JSON clients retain their API
   t.after(() => new Promise((resolve) => server.close(resolve)));
   const origin = `http://127.0.0.1:${server.address().port}`;
 
-  const page = await fetch(`${origin}/data-quality`, { headers: { accept: "text/html" } });
+  const page = await fetch(`${origin}/data-quality`, {
+    headers: { accept: "text/html", ...analystHeaders },
+  });
   assert.equal(page.status, 200);
   assert.match(page.headers.get("content-type"), /text\/html/);
   assert.match(await page.text(), /<div id="root">/);
 
   for (const endpoint of ["/data-quality-data", "/data-quality"]) {
-    const response = await fetch(`${origin}${endpoint}`, { headers: { accept: "application/json" } });
+    const response = await fetch(`${origin}${endpoint}`, {
+      headers: { accept: "application/json", ...analystHeaders },
+    });
     assert.equal(response.status, 200);
     assert.match(response.headers.get("content-type"), /application\/json/);
     assert.equal((await response.json()).inventory.total, 0);

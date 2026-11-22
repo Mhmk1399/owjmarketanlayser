@@ -31,6 +31,8 @@
     "migrate:catalog-filter-indexes": "node scripts/migrate-catalog-filter-indexes.js",
     "audit:buyer-search": "node scripts/audit-buyer-search.js",
     "report:buyer-search": "node scripts/report-buyer-search.js",
+    "db:plan": "node scripts/init-analytics-database.js",
+    "db:init": "node scripts/init-analytics-database.js --apply",
     "build": "npm run dashboard:build",
     "test": "node --test test/*.test.js"
   },

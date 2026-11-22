@@ -1,0 +1,12 @@
+ARG BASE_IMAGE=owj-market-analytics:20261106-split1
+FROM ${BASE_IMAGE}
+
+WORKDIR /app
+
+# Dependencies and Playwright browsers are inherited from the verified base
+# image. This overlay is valid only when package dependencies are unchanged.
+COPY package.json package-lock.json ./
+COPY public ./public
+COPY schemas ./schemas
+COPY scripts ./scripts
+COPY src ./src

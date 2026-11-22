@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import { createAnalyticsServer } from "../src/api/server.js";
 
+const consultantToken = "test-consultant-token-0000000000000";
+
 test("buyer matching API forwards only normalized criteria and returns bounded results", async (t) => {
   let received = null;
   const store = {
@@ -15,14 +17,20 @@ test("buyer matching API forwards only normalized criteria and returns bounded r
     },
   };
   const server = createAnalyticsServer({
-    config: { search: { maxCandidates: 500, maxConcurrent: 2, queryMaxTimeMs: 1_500 }, paths: {} },
+    config: {
+      search: { maxCandidates: 500, maxConcurrent: 2, queryMaxTimeMs: 1_500 },
+      paths: {}, security: { consultantToken },
+    },
     store, analytics: {}, crawler: {}, logger: { info() {}, error() {} },
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise((resolve) => server.close(resolve)));
   const response = await fetch(`http://127.0.0.1:${server.address().port}/buyer-matches/search`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${consultantToken}`,
+    },
     body: JSON.stringify({ requirement: {
       transactionType: "buy", locations: ["ونک"], maxPrice: 20_000_000_000,
       notes: "must not cross into matching", createdBy: "browser-value",

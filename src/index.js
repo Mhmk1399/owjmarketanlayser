@@ -6,8 +6,10 @@ import { LiveMarketEngine } from "./analytics/marketEngine.js";
 import { PublicCrawler } from "./collector/publicCrawler.js";
 import { createAnalyticsServer } from "./api/server.js";
 import { LiveScoringService } from "./scoring/liveScoring.js";
+import { validateCredentialConfiguration } from "./security/authorization.js";
 
 process.chdir(config.serviceRoot);
+validateCredentialConfiguration(config.security, { crawlerControlToken: config.crawlerControl.token });
 
 const logger = new StructuredLogger({
   file: config.paths.logFile,

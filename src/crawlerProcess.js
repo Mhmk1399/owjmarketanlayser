@@ -1,13 +1,14 @@
 import { config } from "./config.js";
 import { LiveMarketEngine } from "./analytics/marketEngine.js";
 import { PublicCrawler } from "./collector/publicCrawler.js";
-import { createCrawlerControlServer } from "./crawler/controlServer.js";
+import { createCrawlerControlServer, validateCrawlerControlCredential } from "./crawler/controlServer.js";
 import { ResourceMonitor } from "./monitoring/resourceMonitor.js";
 import { createLogger } from "./runtime/createLogger.js";
 import { createStore } from "./runtime/createStore.js";
 
 process.chdir(config.serviceRoot);
 if (!config.mongoUri) throw new Error("The split crawler process requires MONGODB_URI");
+validateCrawlerControlCredential(config.crawlerControl.token);
 const logger = await createLogger("crawler");
 const monitor = new ResourceMonitor({ logger, role: "crawler", intervalMs: config.resourceLogIntervalMs });
 monitor.start();

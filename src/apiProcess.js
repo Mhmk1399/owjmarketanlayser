@@ -5,8 +5,10 @@ import { RemoteCrawler } from "./crawler/remoteCrawler.js";
 import { ResourceMonitor } from "./monitoring/resourceMonitor.js";
 import { createLogger } from "./runtime/createLogger.js";
 import { createStore } from "./runtime/createStore.js";
+import { validateCredentialConfiguration } from "./security/authorization.js";
 
 process.chdir(config.serviceRoot);
+validateCredentialConfiguration(config.security, { crawlerControlToken: config.crawlerControl.token });
 const logger = await createLogger("api");
 const monitor = new ResourceMonitor({ logger, role: "api", intervalMs: config.resourceLogIntervalMs });
 monitor.start();

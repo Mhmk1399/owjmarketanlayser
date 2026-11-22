@@ -176,6 +176,15 @@ export const config = {
     maxConcurrent: integer(process.env.ANALYTICS_SEARCH_MAX_CONCURRENT, 4, 1, 32),
     queryMaxTimeMs: integer(process.env.ANALYTICS_SEARCH_QUERY_MAX_TIME_MS, 2_000, 250, 10_000),
   },
+  security: {
+    // Temporary scoped bearer credentials protect privileged operations until
+    // Web-issued identity verification is approved. They are not human login
+    // credentials and must be distinct from crawler control authentication.
+    operatorToken: process.env.ANALYTICS_OPERATOR_TOKEN || null,
+    analystToken: process.env.ANALYTICS_ANALYST_TOKEN || null,
+    consultantToken: process.env.ANALYTICS_CONSULTANT_TOKEN || null,
+    webServiceToken: process.env.ANALYTICS_WEB_SERVICE_TOKEN || null,
+  },
   paths: {
     data: path.join(serviceRoot, "data"),
     logs: path.join(serviceRoot, "logs"),

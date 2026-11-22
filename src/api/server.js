@@ -11,6 +11,7 @@ import { calculateSavedScenario, scenarioDocument } from "../scoring/scenarioSer
 import { BUYER_MATCH_AMENITIES, normalizeBuyerMatchRequest } from "../search/buyerMatcher.js";
 import { normalizeListingPage } from "../storage/listingPagination.js";
 import { OpenAIVoiceService } from "../services/openaiVoice.js";
+import { authorizeAnalyticsRequest } from "../security/authorization.js";
 
 function sendJson(response, status, value) {
   const body = JSON.stringify(value, null, 2);
@@ -262,6 +263,7 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
     const startedAt = Date.now();
     const requestId = randomUUID();
     const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
+    const originalPath = url.pathname;
     let status = 200;
     response.once("finish", () => {
       logger.info("http.request", "JSON API request completed", {
@@ -274,29 +276,52 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
     });
 
     try {
+      const authorization = authorizeAnalyticsRequest(request, originalPath, config.security);
+      if (!authorization.ok) {
+        logger.warn("http.authorization.denied", "Analytics request authorization denied", {
+          requestId,
+          method: request.method,
+          path: originalPath,
+          requiredRole: authorization.classification.role,
+          status: authorization.status,
+          error: authorization.error,
+        });
+        return sendJson(response, authorization.status, {
+          error: authorization.error,
+          requiredRole: authorization.classification.role,
+          requestId,
+        });
+      }
+
+      // Internal v1 is an authenticated compatibility adapter over the stable
+      // public market contracts. The service credential is never returned to
+      // a browser, and CRM/customer identity is not accepted by these routes.
+      if (request.method === "GET" && url.pathname === "/internal/v1/listings") {
+        url.pathname = "/listings";
+      } else if (request.method === "POST" && url.pathname === "/internal/v1/buyer-matches/search") {
+        url.pathname = "/buyer-matches/search";
+      } else {
+        const internalListing = url.pathname.match(/^\/internal\/v1\/listings\/([A-Za-z0-9_-]+)$/);
+        if (request.method === "GET" && internalListing) url.pathname = `/listings/${internalListing[1]}`;
+      }
+
       if (request.method === "GET" && url.pathname === "/health") {
         return sendJson(response, 200, {
           status: "ok",
           service: "owj-market-analytics",
-          mode: config.mongoUri ? "public-only-mongodb" : "public-only-json",
           time: new Date().toISOString(),
-          process: resourceMonitor?.snapshot() || null,
-          listingCount: store.getListings().length,
-          crawl: crawler.snapshot(),
-          guardrails: {
-            contactEndpointAttempts: crawler.snapshot().contactEndpointAttempts,
-            authenticatedTokenAccess: 0,
-          },
-          derivedFiles: {
-            listings: config.paths.listings,
-            analytics: config.paths.analytics,
-            models: config.paths.model,
-            scoringReady: config.paths.scoringReady,
-            scoredListings: config.paths.scoredListings,
-            scoringReport: config.paths.scoringReport,
-            logs: config.paths.logFile,
-          },
         });
+      }
+
+      const internalValuation = originalPath.match(/^\/internal\/v1\/listings\/([A-Za-z0-9_-]+)\/valuation$/);
+      if (request.method === "GET" && internalValuation) {
+        if (typeof store.listingValuation !== "function") {
+          return sendJson(response, 503, { error: "mongodb-required" });
+        }
+        const valuation = await store.listingValuation(internalValuation[1]);
+        return valuation
+          ? sendJson(response, 200, valuation)
+          : sendJson(response, 404, { error: "valuation-not-found", token: internalValuation[1] });
       }
 
       if (request.method === "GET" && url.pathname === "/map-config") {

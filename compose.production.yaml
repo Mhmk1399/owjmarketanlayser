@@ -37,15 +37,16 @@ services:
       ANALYTICS_PORT: "4567"
       ANALYTICS_AUTO_CRAWL: "false"
       ANALYTICS_CRAWLER_CONTROL_URL: http://analytics-crawler:4568
-    depends_on:
-      analytics-crawler:
-        condition: service_healthy
-      analytics-scorer:
-        condition: service_healthy
+      ANALYTICS_CONSULTANT_TOKEN: ${ANALYTICS_CONSULTANT_TOKEN:?Set ANALYTICS_CONSULTANT_TOKEN}
+      ANALYTICS_ANALYST_TOKEN: ${ANALYTICS_ANALYST_TOKEN:?Set ANALYTICS_ANALYST_TOKEN}
+      ANALYTICS_OPERATOR_TOKEN: ${ANALYTICS_OPERATOR_TOKEN:?Set ANALYTICS_OPERATOR_TOKEN}
+      ANALYTICS_WEB_SERVICE_TOKEN: ${ANALYTICS_WEB_SERVICE_TOKEN:?Set ANALYTICS_WEB_SERVICE_TOKEN}
     networks:
       - analytics-internal
       - web_app-network
     pids_limit: 200
+    cpus: 1.0
+    mem_limit: 1536m
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4567/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 30s
@@ -68,6 +69,8 @@ services:
       ANALYTICS_MAX_REQUESTS_PER_MINUTE: "24"
     shm_size: 512mb
     pids_limit: 300
+    cpus: 1.5
+    mem_limit: 2560m
     volumes:
       - crawler-data:/app/data
     healthcheck:
@@ -88,6 +91,8 @@ services:
       ANALYTICS_SCORER_HEALTH_HOST: 0.0.0.0
       ANALYTICS_SCORER_HEALTH_PORT: "4569"
     pids_limit: 200
+    cpus: 1.5
+    mem_limit: 3072m
     volumes:
       - scorer-data:/app/data
     healthcheck:

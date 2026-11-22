@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { cleanListings, scoringEligibilityReasons } from "../src/scoring/cleanListings.js";
 import { trainCrossValidatedPriceModel } from "../src/scoring/ridgePriceModel.js";
-import { scoreListings } from "../src/scoring/scoringMachine.js";
+import { createComparableIndex, scoreListings } from "../src/scoring/scoringMachine.js";
 import { runScoringPipeline } from "../src/scoring/pipeline.js";
 
 function rawListing(index, overrides = {}) {
@@ -87,7 +87,10 @@ test("location-aware model uses out-of-fold predictions and produces distributed
   assert.equal(trained.model.locationFeaturesIncluded, true);
   assert.ok(trained.model.validation.rSquaredLog > 0.8);
 
-  const scored = scoreListings(cleaned.records, trained.predictions, trained.model);
+  const performanceEvents = [];
+  const scored = scoreListings(cleaned.records, trained.predictions, trained.model, {
+    onEvent: (event) => performanceEvents.push(event),
+  });
   assert.equal(scored.listings.length, cleaned.records.length);
   assert.equal(scored.listings[0].rank, 1);
   assert.equal(scored.listings[0].evidence.predictionIsOutOfFold, true);
@@ -100,6 +103,25 @@ test("location-aware model uses out-of-fold predictions and produces distributed
   assert.ok(Number.isFinite(scored.summary.valuationValidation.medianAbsolutePercentageError));
   assert.ok(new Set(scored.listings.map((item) => item.scores.recommendation)).size > 10);
   assert.doesNotMatch(JSON.stringify(scored), /:null/);
+  const indexEvent = performanceEvents.find(({ type }) => type === "score.comparable-index.complete");
+  assert.ok(indexEvent.candidateChecks <= indexEvent.exhaustiveChecks);
+  const exhaustive = scoreListings(cleaned.records, trained.predictions, trained.model, {
+    useComparableIndex: false,
+  });
+  assert.deepEqual(scored, exhaustive);
+});
+
+test("comparable index bounds candidate checks across a city-scale fixture", () => {
+  const records = Array.from({ length: 400 }, (_, index) => ({
+    token: `spatial-${index}`,
+    location: {
+      latitude: 35.55 + (index % 20) * 0.015,
+      longitude: 51.15 + Math.floor(index / 20) * 0.02,
+    },
+  }));
+  const index = createComparableIndex(records);
+  for (const record of records) index.candidatesFor(record);
+  assert.ok(index.metrics.candidateChecks < index.metrics.exhaustiveChecks * 0.35);
 });
 
 test("callback-driven pipeline writes all four no-null scoring documents", async () => {
@@ -137,4 +159,27 @@ test("callback-driven pipeline writes all four no-null scoring documents", async
     const contents = await fs.readFile(file, "utf8");
     assert.doesNotMatch(contents, /: null/);
   }
+});
+
+test("empty input reports not-ready and never publishes a trained model", async () => {
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "owj-empty-score-test-"));
+  const paths = {
+    input: path.join(temporary, "listings.json"),
+    scoringReady: path.join(temporary, "scoring-ready.json"),
+    scoredListings: path.join(temporary, "scored-listings.json"),
+    model: path.join(temporary, "scoring-model.json"),
+    report: path.join(temporary, "scoring-report.json"),
+  };
+  await fs.writeFile(paths.input, JSON.stringify({
+    schemaVersion: "1.0.0", updatedAt: "2026-11-20T00:00:00.000Z", listings: [],
+  }));
+  let persisted = false;
+  const result = await runScoringPipeline({ paths }, { onPersist: () => { persisted = true; } });
+  assert.equal(result.report.status, "not-ready");
+  assert.equal(result.report.reason, "insufficient-clean-listings");
+  assert.equal(result.report.acceptedCount, 0);
+  assert.equal(persisted, false);
+  await assert.rejects(fs.access(paths.model), /ENOENT/);
+  await assert.rejects(fs.access(paths.scoredListings), /ENOENT/);
+  assert.deepEqual(JSON.parse(await fs.readFile(paths.scoringReady, "utf8")).listings, []);
 });

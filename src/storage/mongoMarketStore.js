@@ -81,6 +81,10 @@ export class MongoMarketStore extends JsonMarketStore {
     this.mongo = await this.mongoOperation("connect", () => mongoose.connect(this.mongoUri, {
       dbName: this.mongoDbName,
       autoIndex: this.mongoAutoIndex,
+      // Production schema creation belongs to explicit, versioned migrations.
+      // Keeping autoCreate disabled also allows read-only service recovery when
+      // Atlas temporarily blocks writes (for example, at a storage quota).
+      autoCreate: false,
       serverSelectionTimeoutMS: 30_000,
       maxPoolSize: 20,
       minPoolSize: 2,
@@ -638,6 +642,37 @@ export class MongoMarketStore extends JsonMarketStore {
       this.listingScoreModel.findOne({ modelId: selectedModelId, token })
         .select({ _id: 0, snapshot: 1 }).lean());
     return score?.snapshot ? plain(score.snapshot) : null;
+  }
+
+  async listingValuation(token) {
+    const active = await this.mongoOperation("valuation.active-model", () =>
+      this.modelVersionModel.findOne({ kind: "batch-price", status: "active" })
+        .select({ modelId: 1, version: 1, generatedAt: 1 }).lean());
+    if (!active) return null;
+    const [score, listing] = await this.mongoOperation("valuation.listing", () => Promise.all([
+      this.listingScoreModel.findOne({ modelId: active.modelId, token })
+        .select({ scoringVersion: 1, generatedAt: 1, recommendation: 1, confidence: 1, risk: 1,
+          propertyQuality: 1, snapshot: 1 }).lean(),
+      this.listingModel.findOne({ token }).select({ lastSeenAt: 1, quality: 1 }).lean(),
+    ]));
+    if (!score || !listing) return null;
+    return {
+      token,
+      modelId: active.modelId,
+      modelVersion: active.version,
+      scoreVersion: score.scoringVersion,
+      estimatedPrice: score.snapshot?.valuation?.predictedPrice ?? null,
+      estimatedPricePerMeter: score.snapshot?.valuation?.predictedPricePerMeter ?? null,
+      confidence: score.confidence,
+      recommendation: score.recommendation,
+      risk: score.risk,
+      propertyQuality: score.propertyQuality,
+      dataFreshness: listing.lastSeenAt,
+      generatedAt: score.generatedAt || active.generatedAt,
+      quality: listing.quality,
+      scoringStatus: "available-experimental",
+      disclaimer: "Experimental market estimate; not a guaranteed valuation or investment advice.",
+    };
   }
 
   async listingScoreHistory(token, { limit = 50 } = {}) {

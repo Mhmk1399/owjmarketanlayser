@@ -76,6 +76,42 @@ export async function runScoringPipeline(
       output: paths.scoringReady,
     });
 
+    if (cleaned.records.length < 120) {
+      const endedAt = new Date().toISOString();
+      emit({
+        type: "pipeline.not-ready",
+        acceptedCount: cleaned.records.length,
+        minimumRequired: 120,
+        reason: "insufficient-clean-listings",
+      });
+      const report = assertNoNulls({
+        schemaVersion: "1.0.0",
+        pipelineVersion: `${CLEANING_VERSION}+${SCORING_VERSION}`,
+        status: "not-ready",
+        reason: "insufficient-clean-listings",
+        minimumRequired: 120,
+        acceptedCount: cleaned.records.length,
+        startedAt,
+        endedAt,
+        durationMs: Math.max(0, Date.parse(endedAt) - Date.parse(startedAt)),
+        paths,
+        cleaning: cleaned.summary,
+        events,
+      }, "scoring not-ready report");
+      await Promise.all([
+        writeJsonAtomic(paths.scoringReady, scoringReadyDocument),
+        writeJsonAtomic(paths.report, report),
+      ]);
+      const result = {
+        paths,
+        report,
+        documents: { scoringReadyDocument },
+        topListings: [],
+      };
+      invoke(callbacks.onComplete, result);
+      return result;
+    }
+
     emit({ type: "model.start", recordCount: cleaned.records.length });
     const trained = trainCrossValidatedPriceModel(cleaned.records, {
       folds: options.folds || 5,

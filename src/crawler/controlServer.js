@@ -1,4 +1,5 @@
 import http from "node:http";
+import { timingSafeEqual } from "node:crypto";
 
 function json(response, status, body) {
   const data = JSON.stringify(body);
@@ -6,10 +7,21 @@ function json(response, status, body) {
   response.end(data);
 }
 
+export function validateCrawlerControlCredential(token) {
+  if (!token || String(token).length < 32) {
+    throw new Error("ANALYTICS_CRAWLER_CONTROL_TOKEN must contain at least 32 characters");
+  }
+}
+
 export function createCrawlerControlServer({ crawler, token = null, logger }) {
+  validateCrawlerControlCredential(token);
   return http.createServer(async (request, response) => {
-    const requestToken = request.headers.authorization?.replace(/^Bearer\s+/i, "") || null;
-    if (token && requestToken !== token) return json(response, 401, { error: "unauthorized" });
+    const match = /^Bearer\s+([^\s]+)$/i.exec(String(request.headers.authorization || ""));
+    const requestToken = match?.[1] || "";
+    const expected = Buffer.from(String(token));
+    const actual = Buffer.from(requestToken);
+    const authenticated = actual.length === expected.length && timingSafeEqual(actual, expected);
+    if (!authenticated) return json(response, 401, { error: "unauthorized" });
     try {
       const url = new URL(request.url, "http://crawler-control");
       if (request.method === "GET" && url.pathname === "/health") return json(response, 200, { status: "ok", role: "crawler" });
