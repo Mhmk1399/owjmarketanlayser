@@ -3,11 +3,14 @@ import { timingSafeEqual } from "node:crypto";
 const ROLE_RANK = Object.freeze({ consultant: 1, analyst: 2, administrator: 3 });
 
 const ADMIN_MUTATIONS = [
+  ["POST", /^\/model-versions\/[A-Za-z0-9_-]+\/promote$/],
+  ["POST", /^\/model-versions\/rollback$/],
+];
+
+const OPERATOR_MUTATIONS = [
   ["POST", /^\/crawl$/],
   ["POST", /^\/area-crawl-jobs$/],
   ["POST", /^\/listings\/[A-Za-z0-9_-]+\/(?:refetch|nearby-places)$/],
-  ["POST", /^\/model-versions\/[A-Za-z0-9_-]+\/promote$/],
-  ["POST", /^\/model-versions\/rollback$/],
   ["POST", /^\/scoring-scenarios$/],
   ["PUT", /^\/scoring-scenarios\/[A-Za-z0-9_-]+$/],
 ];
@@ -34,6 +37,7 @@ const ANALYST_OPERATIONS = [
 
 const PUBLIC_OPERATIONS = [
   ["GET", /^\/health$/],
+  ["GET", /^\/ready$/],
   ["GET", /^\/(?:map-config|listing-facets)$/],
   ["GET", /^\/ai\/voice\/status$/],
   ["GET", /^\/buyer-matches\/options$/],
@@ -51,12 +55,13 @@ function matches(entries, method, pathname) {
 
 export function classifyAnalyticsRequest(method, pathname, { accept = "" } = {}) {
   if (pathname.startsWith("/internal/v1/")) return { audience: "service", role: "web-market-read" };
-  if (matches(ADMIN_MUTATIONS, method, pathname)) return { audience: "human", role: "administrator" };
-  if (matches(CONSULTANT_OPERATIONS, method, pathname)) return { audience: "human", role: "consultant" };
+  if (matches(ADMIN_MUTATIONS, method, pathname)) return { audience: "human", role: "administrator", requiredScope: "analytics:admin", forceFresh: true };
+  if (matches(OPERATOR_MUTATIONS, method, pathname)) return { audience: "human", role: "administrator", requiredScope: "analytics:operate", forceFresh: true };
+  if (matches(CONSULTANT_OPERATIONS, method, pathname)) return { audience: "human", role: "consultant", requiredScope: "analytics:read" };
   if (pathname === "/data-quality" && method === "GET" && String(accept).includes("text/html")) {
-    return { audience: "human", role: "analyst" };
+    return { audience: "human", role: "analyst", requiredScope: "analytics:read" };
   }
-  if (matches(ANALYST_OPERATIONS, method, pathname)) return { audience: "human", role: "analyst" };
+  if (matches(ANALYST_OPERATIONS, method, pathname)) return { audience: "human", role: "analyst", requiredScope: "analytics:read" };
   if (matches(PUBLIC_OPERATIONS, method, pathname)) return { audience: "public", role: "public" };
   // New or misspelled routes never become public by omission. Unknown reads
   // require analyst access and unknown non-reads require administrator access;
@@ -64,6 +69,8 @@ export function classifyAnalyticsRequest(method, pathname, { accept = "" } = {})
   return {
     audience: "human",
     role: method === "GET" || method === "HEAD" ? "analyst" : "administrator",
+    requiredScope: method === "GET" || method === "HEAD" ? "analytics:read" : "analytics:admin",
+    forceFresh: method !== "GET" && method !== "HEAD",
   };
 }
 
@@ -115,12 +122,30 @@ export function authorizeAnalyticsRequest(request, pathname, security = {}) {
   return { ok: true, classification, principal: actualRole };
 }
 
+export async function authorizeAnalyticsRequestWithIdentity(request, pathname, security = {}, identityAdapter = null, requestId = null) {
+  const classification = classifyAnalyticsRequest(request.method, pathname, { accept: request.headers.accept });
+  if (classification.audience !== "human") return authorizeAnalyticsRequest(request, pathname, security);
+
+  const legacy = security.legacyHumanTokensEnabled !== false
+    ? authorizeAnalyticsRequest(request, pathname, security)
+    : { ok: false, status: 401, error: "unauthorized", classification };
+  if (legacy.ok || bearerToken(request.headers.authorization)) return legacy;
+  if (!identityAdapter?.enabled) return legacy;
+  const result = await identityAdapter.authenticate(request, {
+    requiredScope: classification.requiredScope || "analytics:read",
+    forceFresh: Boolean(classification.forceFresh),
+    requestId,
+  });
+  return { ...result, classification };
+}
+
 export function validateCredentialConfiguration(security = {}, { crawlerControlToken = null } = {}) {
   const entries = [
     ["ANALYTICS_OPERATOR_TOKEN", security.operatorToken],
     ["ANALYTICS_ANALYST_TOKEN", security.analystToken],
     ["ANALYTICS_CONSULTANT_TOKEN", security.consultantToken],
     ["ANALYTICS_WEB_SERVICE_TOKEN", security.webServiceToken],
+    ["ANALYTICS_TO_WEB_SERVICE_TOKEN", security.analyticsToWebServiceToken],
     ["ANALYTICS_CRAWLER_CONTROL_TOKEN", crawlerControlToken],
   ].filter(([, value]) => value);
   for (const [name, value] of entries) {
@@ -131,9 +156,10 @@ export function validateCredentialConfiguration(security = {}, { crawlerControlT
 }
 
 export const AUTHORIZATION_MATRIX = Object.freeze({
-  public: "Public health, bounded listing reads, facets, schemas, static assets, and capability status",
+  public: "Public health/readiness, bounded listing reads, facets, schemas, static assets, and capability status",
   consultant: "Buyer matching and AI voice transformations",
   analyst: "Operational dashboard data, diagnostics, crawl state, history, and scoring analysis",
-  administrator: "Crawler initiation, refetch/enrichment, scenario writes, and model lifecycle mutations",
+  operator: "Fresh Web authorization with analytics:operate for crawler, refetch/enrichment, and scenario writes",
+  administrator: "Fresh Web authorization with analytics:admin for model lifecycle and unknown mutations",
   service: "Versioned internal Web-to-Analytics market-read contracts",
 });

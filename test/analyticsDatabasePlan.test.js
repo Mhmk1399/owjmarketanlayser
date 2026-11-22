@@ -4,8 +4,8 @@ import { databasePlan, validateAnalyticsDatabaseTarget } from "../src/storage/an
 
 test("database plan covers every Analytics model and its declared indexes", () => {
   const plan = databasePlan();
-  assert.equal(plan.models.length, 14);
-  assert.equal(new Set(plan.models.map(({ collection }) => collection)).size, 14);
+  assert.equal(plan.models.length, 16);
+  assert.equal(new Set(plan.models.map(({ collection }) => collection)).size, 16);
   assert.ok(plan.models.every(({ indexes }) => indexes.length > 0));
 });
 

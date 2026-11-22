@@ -1,0 +1,44 @@
+{
+  "contract": "owj.analytics.identity.exchange",
+  "version": 1,
+  "status": "proposed-awaiting-web-implementation",
+  "transport": {
+    "method": "POST",
+    "path": "/api/internal/v1/analytics/exchange",
+    "authentication": "Authorization: Bearer <ANALYTICS_TO_WEB_SERVICE_TOKEN>",
+    "serviceHeader": { "X-Owj-Service": "owj-analytics" },
+    "maximumRequestBytes": 8192,
+    "timeoutMilliseconds": 2000
+  },
+  "request": {
+    "additionalProperties": false,
+    "required": ["version", "code", "codeVerifier", "redirectUri", "state"],
+    "properties": {
+      "version": { "const": 1 },
+      "code": { "type": "string", "minLength": 1, "maxLength": 512 },
+      "codeVerifier": { "type": "string", "pattern": "^[A-Za-z0-9._~-]{43,128}$" },
+      "redirectUri": { "type": "string", "format": "uri", "maximumLength": 2048 },
+      "state": { "type": "string", "pattern": "^[A-Za-z0-9_-]{32,128}$" }
+    }
+  },
+  "successResponse": {
+    "additionalProperties": false,
+    "required": ["version", "subject", "accountStatus", "scopes", "sessionExpiresAt", "authorizationCheckedAt", "authorizationCacheMaxAgeSeconds"],
+    "properties": {
+      "version": { "const": 1 },
+      "subject": { "type": "string", "pattern": "^[a-f0-9]{24}$" },
+      "accountStatus": { "const": "active" },
+      "scopes": { "type": "array", "minItems": 1, "uniqueItems": true, "contains": { "const": "analytics:read" }, "items": { "enum": ["analytics:read", "analytics:operate", "analytics:admin"] } },
+      "sessionExpiresAt": { "type": "string", "format": "date-time" },
+      "authorizationCheckedAt": { "type": "string", "format": "date-time" },
+      "authorizationCacheMaxAgeSeconds": { "type": "integer", "minimum": 0, "maximum": 60 }
+    }
+  },
+  "codeRules": {
+    "maximumLifetimeSeconds": 60,
+    "singleUse": true,
+    "boundTo": ["redirectUri", "S256 PKCE challenge", "authorizing Web user"],
+    "browserJwtAccepted": false
+  }
+}
+

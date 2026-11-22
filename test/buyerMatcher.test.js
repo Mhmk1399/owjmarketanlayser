@@ -37,6 +37,13 @@ test("buyer matcher normalizes an allowlisted request and creates indexed hard f
   assert.throws(() => normalizeBuyerMatchRequest({ requiredAmenities: ["jacuzzi"] }), /Unsupported amenities/);
 });
 
+test("buyer matcher rejects CRM identity and private contact fields", () => {
+  assert.throws(() => normalizeBuyerMatchRequest({ transactionType: "buy", phone: "09120000000" }),
+    (error) => error.code === "buyer-identity-fields-forbidden");
+  assert.throws(() => normalizeBuyerMatchRequest({ transactionType: "buy", crmRecord: { notes: "private" } }),
+    (error) => error.code === "buyer-identity-fields-forbidden");
+});
+
 test("buyer matcher ranks bounded candidates and protects cursors with the criteria fingerprint", () => {
   const requirement = normalizeBuyerMatchRequest({
     minPrice: 9_000_000_000, maxPrice: 11_000_000_000,

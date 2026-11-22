@@ -8,13 +8,20 @@ import { fetchNearbyPlaces } from "../services/neshanPlaces.js";
 import { buildDataQualityBaseline } from "./dataQuality.js";
 import { ScoringScenario } from "../models/scoringScenario.js";
 import { calculateSavedScenario, scenarioDocument } from "../scoring/scenarioService.js";
-import { BUYER_MATCH_AMENITIES, normalizeBuyerMatchRequest } from "../search/buyerMatcher.js";
+import { assertBuyerCriteriaPrivacy, BUYER_MATCH_AMENITIES, normalizeBuyerMatchRequest } from "../search/buyerMatcher.js";
 import { normalizeListingPage } from "../storage/listingPagination.js";
 import { OpenAIVoiceService } from "../services/openaiVoice.js";
-import { authorizeAnalyticsRequest } from "../security/authorization.js";
+import { authorizeAnalyticsRequestWithIdentity } from "../security/authorization.js";
+import { createAnalyticsIdentityAdapter } from "../security/analyticsIdentityAdapter.js";
 
-function sendJson(response, status, value) {
+function sendJson(response, status, value, { maximumBytes = null } = {}) {
   const body = JSON.stringify(value, null, 2);
+  if (maximumBytes && Buffer.byteLength(body) > maximumBytes) {
+    return sendJson(response, 503, {
+      error: "response-too-large",
+      message: "The bounded response exceeded its safety limit.",
+    });
+  }
   response.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Content-Length": Buffer.byteLength(body),
@@ -201,7 +208,15 @@ function externalListing(listing) {
 
 export const _catalogFilterHelpers = { matchesListingQuery, matchesScoreQuery };
 
-export function createAnalyticsServer({ config, store, analytics, crawler, logger, resourceMonitor = null }) {
+function dashboardRoute(pathname) {
+  return pathname === "/" || pathname === "/score-analytics" || pathname === "/score-workshop"
+    || pathname === "/data-quality" || pathname === "/catalog" || pathname === "/buyer-matching"
+    || pathname === "/auth/callback" || /^\/explore(?:\/[a-z0-9-]+)?$/i.test(pathname)
+    || /^\/listing\/[A-Za-z0-9_-]+$/.test(pathname);
+}
+
+export function createAnalyticsServer({ config, store, analytics, crawler, logger, resourceMonitor = null, identityAdapter = null }) {
+  const identity = identityAdapter || createAnalyticsIdentityAdapter(config);
   let recommendationAnalysisCache = { key: null, value: new Map() };
   let activeBuyerSearches = 0;
   const readScoredSnapshot = createCachedJsonReader(config.paths.scoredListings, null);
@@ -276,7 +291,29 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
     });
 
     try {
-      const authorization = authorizeAnalyticsRequest(request, originalPath, config.security);
+      if (request.method === "GET" && originalPath === "/auth/v1/analytics/session") {
+        const redirectUri = url.searchParams.get("redirectUri") || config.identity?.allowedRedirectUris?.[0];
+        return sendJson(response, 200, await identity.current(request, response, { redirectUri, requestId }));
+      }
+      if (request.method === "POST" && originalPath === "/auth/v1/analytics/session") {
+        const body = await readJsonBody(request, 8_192);
+        return sendJson(response, 201, await identity.exchange(request, response, body, requestId));
+      }
+      if (request.method === "POST" && originalPath === "/auth/v1/analytics/logout") {
+        await readJsonBody(request, 1_024);
+        return sendJson(response, 200, await identity.logout(request, response));
+      }
+      // The HTML shell contains no identity data or credential. It must load so
+      // the browser can show accessible auth states and start Web authorization.
+      if (identity.enabled && request.method === "GET" && dashboardRoute(originalPath)) {
+        const sent = await sendStatic(response, new URL("../../public/index.html", import.meta.url), STATIC_TYPES[".html"]);
+        if (sent) return;
+        return sendJson(response, 503, { error: "dashboard-not-built" });
+      }
+
+      const authorization = await authorizeAnalyticsRequestWithIdentity(
+        request, originalPath, config.security, identity, requestId,
+      );
       if (!authorization.ok) {
         logger.warn("http.authorization.denied", "Analytics request authorization denied", {
           requestId,
@@ -313,15 +350,28 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
         });
       }
 
+      if (request.method === "GET" && url.pathname === "/ready") {
+        const identityReady = !identity.enabled || identity.client.configured;
+        return sendJson(response, identityReady ? 200 : 503, {
+          status: identityReady ? "ready" : "not-ready",
+          service: "owj-market-analytics",
+          storage: config.mongoUri ? "mongodb" : "json",
+          webIdentity: identity.enabled ? (identity.client.configured ? "configured" : "unavailable") : "disabled",
+        });
+      }
+
       const internalValuation = originalPath.match(/^\/internal\/v1\/listings\/([A-Za-z0-9_-]+)\/valuation$/);
       if (request.method === "GET" && internalValuation) {
         if (typeof store.listingValuation !== "function") {
           return sendJson(response, 503, { error: "mongodb-required" });
         }
-        const valuation = await store.listingValuation(internalValuation[1]);
-        return valuation
-          ? sendJson(response, 200, valuation)
-          : sendJson(response, 404, { error: "valuation-not-found", token: internalValuation[1] });
+        const valuation = await store.listingValuation(internalValuation[1], {
+          queryMaxTimeMs: config.search?.queryMaxTimeMs || 2_000,
+        });
+        if (!valuation) return sendJson(response, 503, { error: "valuation-unavailable", token: internalValuation[1] });
+        return valuation.valuationStatus === "missing-listing"
+          ? sendJson(response, 404, valuation)
+          : sendJson(response, 200, valuation, { maximumBytes: 131_072 });
       }
 
       if (request.method === "GET" && url.pathname === "/map-config") {
@@ -419,6 +469,7 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
         const searchStartedAt = Date.now();
         try {
           const body = await readJsonBody(request, 64_000);
+          assertBuyerCriteriaPrivacy(body);
           const requirement = normalizeBuyerMatchRequest(body.requirement || body);
           const limit = numberParam(body.page?.limit, 30, 1, 50);
           const result = await store.matchBuyerRequirement(requirement, {
@@ -457,7 +508,7 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
             } : null,
             listing: externalListing(row.listing),
             })),
-          });
+          }, { maximumBytes: 1_048_576 });
         } finally {
           activeBuyerSearches -= 1;
         }
@@ -822,24 +873,45 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
         });
         const districts = url.searchParams.getAll("district").filter((value) => value && value !== "all");
         const area = url.searchParams.get("area");
+        const city = url.searchParams.get("city");
         const category = url.searchParams.get("category");
+        const transactionType = url.searchParams.get("transactionType");
         const advertiserType = url.searchParams.get("advertiserType");
         const query = url.searchParams.get("q");
         const readiness = url.searchParams.get("readiness");
         const lifecycleStatus = url.searchParams.get("status");
-        const numeric = (name) => { const value = Number(url.searchParams.get(name)); return Number.isFinite(value) && url.searchParams.has(name) ? value : undefined; };
-        const amenities = url.searchParams.getAll("amenity").filter((value) => /^[a-zA-Z]+$/.test(value));
+        const numeric = (name, minimum = 0, maximum = Number.POSITIVE_INFINITY) => {
+          if (!url.searchParams.has(name)) return undefined;
+          const value = Number(url.searchParams.get(name));
+          if (!Number.isFinite(value) || value < minimum || value > maximum) {
+            throw Object.assign(new Error(`${name} is outside its allowed numeric range`), { status: 400, code: "invalid-search-range" });
+          }
+          return value;
+        };
+        const amenities = url.searchParams.getAll("amenity");
+        if (amenities.some((value) => !BUYER_MATCH_AMENITIES.includes(value))) {
+          return sendJson(response, 400, { error: "invalid-amenity" });
+        }
+        const rawSeenAfter = url.searchParams.get("seenAfter");
+        const seenAfter = rawSeenAfter ? new Date(rawSeenAfter) : undefined;
+        if (seenAfter && !Number.isFinite(seenAfter.getTime())) return sendJson(response, 400, { error: "invalid-seen-after" });
+        const sort = url.searchParams.get("sort") || "newest";
+        if (!["newest", "price-asc", "price-desc", "area-desc"].includes(sort)) return sendJson(response, 400, { error: "invalid-sort" });
+        if (transactionType && !["buy", "rent"].includes(transactionType)) return sendJson(response, 400, { error: "invalid-transaction-type" });
         if (typeof store.queryListings === "function") {
-          const result = await store.queryListings({ offset, limit, districts, area, category, advertiserType, query, readiness, status: lifecycleStatus,
+          const result = await store.queryListings({ offset, limit, districts, city, area, category, transactionType, advertiserType, query, readiness, status: lifecycleStatus,
             minPrice: numeric("minPrice"), maxPrice: numeric("maxPrice"), minPricePerMeter: numeric("minPricePerMeter"), maxPricePerMeter: numeric("maxPricePerMeter"),
-            minArea: numeric("minArea"), maxArea: numeric("maxArea"), minRooms: numeric("minRooms"), minYear: numeric("minYear"), amenities,
+            minArea: numeric("minArea"), maxArea: numeric("maxArea"), minRooms: numeric("minRooms"), maxRooms: numeric("maxRooms"), minYear: numeric("minYear"), amenities,
+            minLatitude: numeric("minLatitude", -90, 90), maxLatitude: numeric("maxLatitude", -90, 90),
+            minLongitude: numeric("minLongitude", -180, 180), maxLongitude: numeric("maxLongitude", -180, 180),
             minScore: numeric("minScore"), maxScore: numeric("maxScore"), minConfidence: numeric("minConfidence"), maxRisk: numeric("maxRisk"),
-            scoreBand: url.searchParams.get("scoreBand") || undefined });
+            scoreBand: url.searchParams.get("scoreBand") || undefined, seenAfter, sort,
+            queryMaxTimeMs: config.search?.queryMaxTimeMs || 2_000 });
           return sendJson(response, 200, {
             schemaVersion: "1.0.0", generatedAt: new Date().toISOString(), total: result.total,
             offset, limit, hasMore: offset + result.listings.length < result.total,
             listings: result.listings.map(externalListing),
-          });
+          }, { maximumBytes: 1_048_576 });
         }
         const all = store.getListings().filter((listing) => {
           const matchesDistrict = !districts.length || districts.some((district) =>
@@ -869,9 +941,11 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
 
       const publicListingMatch = url.pathname.match(/^\/listings\/([A-Za-z0-9_-]+)$/);
       if (request.method === "GET" && publicListingMatch) {
-        const listing = store.getListing(publicListingMatch[1]);
+        const listing = typeof store.publicListing === "function"
+          ? await store.publicListing(publicListingMatch[1], { queryMaxTimeMs: config.search?.queryMaxTimeMs || 2_000 })
+          : store.getListing(publicListingMatch[1]);
         return listing
-          ? sendJson(response, 200, externalListing(listing))
+          ? sendJson(response, 200, externalListing(listing), { maximumBytes: 1_048_576 })
           : sendJson(response, 404, { error: "listing-not-found", token: publicListingMatch[1] });
       }
 
@@ -996,14 +1070,7 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
         return sendJson(response, 200, schema);
       }
 
-      const isDashboardRoute = url.pathname === "/" ||
-        url.pathname === "/score-analytics" ||
-        url.pathname === "/score-workshop" ||
-        url.pathname === "/data-quality" ||
-        url.pathname === "/catalog" ||
-        url.pathname === "/buyer-matching" ||
-        /^\/explore(?:\/[a-z0-9-]+)?$/i.test(url.pathname) ||
-        /^\/listing\/[A-Za-z0-9_-]+$/.test(url.pathname);
+      const isDashboardRoute = dashboardRoute(url.pathname);
       if (request.method === "GET" && isDashboardRoute) {
         const sent = await sendStatic(
           response,

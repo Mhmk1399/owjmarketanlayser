@@ -1,0 +1,82 @@
+name: owj-analytics-local
+
+x-analytics-api: &analytics-api
+  build:
+    context: .
+    dockerfile: Dockerfile
+  init: true
+  restart: unless-stopped
+  env_file:
+    - path: ${ANALYTICS_LOCAL_ENV_FILE:-deploy/env.analytics.local.example}
+      required: true
+  environment:
+    NODE_ENV: development
+    ANALYTICS_LOG_TO_FILE: "false"
+    ANALYTICS_AUTO_CRAWL: "false"
+    ANALYTICS_WEB_IDENTITY_ENABLED: "true"
+    ANALYTICS_ALLOW_INSECURE_LOCAL_COOKIE: "true"
+  networks: [owj_platform]
+
+services:
+  analytics-api:
+    <<: *analytics-api
+    command: ["npm", "run", "start:api"]
+    expose: ["4567"]
+    mem_limit: 1024m
+    cpus: 0.75
+    pids_limit: 180
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4567/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  analytics-dashboard:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.dashboard
+    restart: unless-stopped
+    expose: ["8080"]
+    networks: [owj_platform]
+    mem_limit: 96m
+    cpus: 0.20
+    pids_limit: 80
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  analytics-crawler:
+    <<: *analytics-api
+    profiles: ["workers"]
+    command: ["npm", "run", "start:crawler"]
+    environment:
+      NODE_ENV: development
+      ANALYTICS_LOG_TO_FILE: "false"
+      ANALYTICS_AUTO_CRAWL: "false"
+      ANALYTICS_CRAWLER_CONTROL_HOST: 0.0.0.0
+    shm_size: 384m
+    mem_limit: 1400m
+    cpus: 1.0
+    pids_limit: 260
+
+  analytics-scorer:
+    <<: *analytics-api
+    profiles: ["workers"]
+    command: ["npm", "run", "start:scorer"]
+    environment:
+      NODE_ENV: development
+      ANALYTICS_LOG_TO_FILE: "false"
+      ANALYTICS_AUTO_CRAWL: "false"
+      ANALYTICS_SCORER_HEALTH_HOST: 0.0.0.0
+    mem_limit: 1536m
+    cpus: 1.0
+    pids_limit: 180
+
+networks:
+  owj_platform:
+    external: true
+    name: ${OWJ_PLATFORM_NETWORK:-owj-sprint2-integration_owj_internal}
+

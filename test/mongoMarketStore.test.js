@@ -26,10 +26,11 @@ test("Mongo listing pages apply filters, stable ordering, skip and a 40-item lim
     sort(value) { calls.push(["sort", value]); return this; },
     skip(value) { calls.push(["skip", value]); return this; },
     limit(value) { calls.push(["limit", value]); return this; },
+    maxTimeMS() { return this; },
     async lean() { return [{ _id: "private-id", token: "listing-41" }]; },
   };
   const listingModel = {
-    countDocuments(filter) { calls.push(["count", filter]); return Promise.resolve(81); },
+    countDocuments(filter) { calls.push(["count", filter]); return { maxTimeMS() { return Promise.resolve(81); } }; },
     find(filter) { calls.push(["find", filter]); return chain; },
   };
   const store = new MongoMarketStore({}, logger, { listingModel });
@@ -48,15 +49,17 @@ test("Mongo listing pages apply filters, stable ordering, skip and a 40-item lim
 test("Mongo catalog score filters use the active model and attach matching score metadata", async () => {
   const listingChain = {
     sort() { return this; }, skip() { return this; }, limit() { return this; },
+    maxTimeMS() { return this; },
     async lean() { return [{ _id: "id", token: "scored-one", lastSeenAt: new Date() }]; },
   };
   const scoreChain = {
     select() { return this; }, limit() { return this; },
+    maxTimeMS() { return this; },
     async lean() { return [{ token: "scored-one", recommendation: 82, confidence: 75, risk: 12, band: "strong-value", rank: 1 }]; },
   };
   const activeChain = { select() { return this; }, async lean() { return { modelId: "active-model" }; } };
   const listingModel = {
-    countDocuments() { return Promise.resolve(1); },
+    countDocuments() { return { maxTimeMS() { return Promise.resolve(1); } }; },
     find() { return listingChain; },
   };
   const store = new MongoMarketStore({}, logger, {
@@ -149,4 +152,23 @@ test("Mongo store writes current service state and crawl history together", asyn
   await store.saveServiceState(operationalState());
   assert.deepEqual(calls.map((item) => item.kind), ["state", "run"]);
   assert.equal(calls[1].value.runId, "run-one");
+});
+
+test("valuation distinguishes a missing model from a missing listing without fabricating a price", async () => {
+  const chain = (value) => ({ select() { return this; }, maxTimeMS() { return this; }, async lean() { return value; } });
+  const storeWithoutModel = new MongoMarketStore({}, logger, {
+    modelVersionModel: { findOne() { return chain(null); } },
+    listingModel: { findOne() { return chain({ lastSeenAt: new Date(), quality: { outcome: "scoring-ready" } }); } },
+  });
+  const noModel = await storeWithoutModel.listingValuation("one");
+  assert.equal(noModel.valuationStatus, "no-active-model");
+  assert.equal(noModel.estimatedPrice, null);
+
+  const missingListing = new MongoMarketStore({}, logger, {
+    modelVersionModel: { findOne() { return chain({ modelId: "model", version: "v1", generatedAt: new Date() }); } },
+    listingModel: { findOne() { return chain(null); } },
+  });
+  const missing = await missingListing.listingValuation("absent");
+  assert.equal(missing.valuationStatus, "missing-listing");
+  assert.equal(missing.estimatedPrice, null);
 });

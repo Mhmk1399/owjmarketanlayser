@@ -1,6 +1,6 @@
 # Analytics Search Contract V1
 
-**Status:** authenticated internal adapters implemented; shared Web contract awaiting approval.  
+**Status (updated 2026-11-22):** authenticated adapters and machine-readable fixture implemented; real Web client remains blocked.
 **Base path:** `/internal/v1`  
 **Authentication:** server-to-server bearer credential from `ANALYTICS_WEB_SERVICE_TOKEN`. The browser must never receive this credential.
 
@@ -14,7 +14,7 @@ Responses contain public listing data, rounded coordinates, model metadata, data
 
 `GET /internal/v1/listings`
 
-Supported bounded query fields mirror the existing `/listings` contract: `offset`, `limit` (maximum 40), repeated `district`, `area`, `category`, `advertiserType`, `q`, `readiness`, `status`, price/area/room/year ranges, amenities, and score/risk/confidence filters.
+Supported bounded query fields are defined normatively in `fixtures/analytics-v1/market-api.contract.json`: `offset`, `limit` (maximum 40), repeated `district`, `city`, `area`, `category`, `transactionType`, `advertiserType`, `q`, `readiness`, `status`, price/area/room/year ranges, amenities, freshness, coordinate bounds, score/risk/confidence filters, and allowlisted sorting. Mongo mode uses a selected public projection, a default 2-second query deadline, first-image-only list results, and a 1 MiB response cap.
 
 Response:
 
@@ -36,7 +36,7 @@ The endpoint is a versioned authenticated adapter over the existing production s
 
 `GET /internal/v1/listings/:token`
 
-`token` must match `[A-Za-z0-9_-]+`. Success returns the same sanitized public listing projection used by the public detail route. Missing records return `404 listing-not-found`.
+`token` must match `[A-Za-z0-9_-]+`. Mongo mode uses a direct bounded public projection rather than the full in-memory Listing map. Missing records return `404 listing-not-found`.
 
 ## C. Buyer matching
 
@@ -59,13 +59,13 @@ Request:
 }
 ```
 
-The response includes the normalized requirement, total/evaluated/truncated counts, a bounded page of ranked matches, matching reasons/components, optional precomputed market score, and an opaque next cursor. Candidate count, query time, result limit, and concurrent searches are bounded by configuration.
+The response includes the normalized requirement, total/evaluated/truncated counts, a bounded page of ranked matches, matching reasons/components, optional precomputed market score, and an opaque next cursor. Candidate count, query time, result limit, concurrent searches, request bytes, and response bytes are bounded. CRM identity/contact/message/note/session fields are rejected at any depth; other unknown fields are discarded.
 
 ## D. Existing valuation
 
 `GET /internal/v1/listings/:token/valuation`
 
-The endpoint reads an existing active score; it does not train a model in the request path. Success includes `token`, `modelId`, `modelVersion`, `scoreVersion`, estimated price and price-per-metre, confidence, recommendation, risk, property quality, listing freshness, scoring generation time, listing quality, `scoringStatus`, and an experimental-estimate disclaimer. It returns `404 valuation-not-found` when no active score exists and `503 mongodb-required` outside Mongo mode.
+The endpoint reads an existing active score; it does not train a model in the request path. `valuationStatus` distinguishes `available`, `insufficient-market-data`, `no-active-model`, `missing-listing`, `stale`, and `unavailable`. Only `missing-listing` returns 404. Other not-ready states return 200 with null estimates, so no price is fabricated. Outside Mongo mode the route returns `503 mongodb-required`.
 
 ## Errors and compatibility
 

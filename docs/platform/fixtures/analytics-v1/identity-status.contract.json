@@ -1,0 +1,29 @@
+{
+  "contract": "owj.analytics.identity.status",
+  "version": 1,
+  "status": "proposed-awaiting-web-implementation",
+  "transport": {
+    "method": "POST",
+    "path": "/api/internal/v1/analytics/identity/status",
+    "authentication": "Authorization: Bearer <ANALYTICS_TO_WEB_SERVICE_TOKEN>",
+    "serviceHeader": { "X-Owj-Service": "owj-analytics" },
+    "maximumRequestBytes": 2048,
+    "timeoutMilliseconds": 2000
+  },
+  "request": {
+    "additionalProperties": false,
+    "required": ["version", "subject", "authorizationEstablishedAt"],
+    "properties": {
+      "version": { "const": 1 },
+      "subject": { "type": "string", "pattern": "^[a-f0-9]{24}$" },
+      "authorizationEstablishedAt": { "type": "string", "format": "date-time" }
+    }
+  },
+  "successResponse": { "$ref": "identity-exchange.contract.json#/successResponse" },
+  "cacheRules": {
+    "ordinaryReadMaximumSeconds": 60,
+    "sensitiveMutationMaximumSeconds": 0,
+    "providerFailure": "fail-closed-and-revoke-local-session"
+  }
+}
+

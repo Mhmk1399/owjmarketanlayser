@@ -33,6 +33,7 @@
     "report:buyer-search": "node scripts/report-buyer-search.js",
     "db:plan": "node scripts/init-analytics-database.js",
     "db:init": "node scripts/init-analytics-database.js --apply",
+    "db:seed:synthetic": "node scripts/seed-analytics-synthetic.js",
     "build": "npm run dashboard:build",
     "test": "node --test test/*.test.js"
   },

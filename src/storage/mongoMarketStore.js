@@ -143,7 +143,10 @@ export class MongoMarketStore extends JsonMarketStore {
     return state;
   }
 
-  async queryListings({ offset, limit, districts = [], area, category, advertiserType, query, readiness, status, minPrice, maxPrice, minPricePerMeter, maxPricePerMeter, minArea, maxArea, minRooms, minYear, amenities = [], minScore, maxScore, minConfidence, maxRisk, scoreBand } = {}) {
+  async queryListings({ offset, limit, districts = [], city, area, category, transactionType, advertiserType, query, readiness, status,
+    minPrice, maxPrice, minPricePerMeter, maxPricePerMeter, minArea, maxArea, minRooms, maxRooms, minYear,
+    amenities = [], minScore, maxScore, minConfidence, maxRisk, scoreBand, seenAfter,
+    minLatitude, maxLatitude, minLongitude, maxLongitude, sort = "newest", queryMaxTimeMs = 2_000 } = {}) {
     ({ offset, limit } = normalizeListingPage({ offset, limit }));
     const filters = [];
     const selectedDistricts = [...new Set((districts || []).filter(Boolean))].slice(0, 30);
@@ -161,7 +164,12 @@ export class MongoMarketStore extends JsonMarketStore {
       { "crawlPartition.area.slug": area }, { "crawlPartition.area.name": area },
       ...(Number.isFinite(Number(area)) ? [{ "crawlPartition.area.id": Number(area) }] : []),
     ] });
+    if (city) filters.push({ city });
     if (category) filters.push({ $or: [{ "crawlPartition.category": category }, { subcategory: category }] });
+    if (transactionType === "buy") filters.push({ "pricing.price": { $ne: null } });
+    if (transactionType === "rent") filters.push({ $or: [
+      { "pricing.deposit": { $ne: null } }, { "pricing.rent": { $ne: null } },
+    ] });
     if (advertiserType) filters.push({ advertiserType });
     if (readiness) filters.push({ "quality.outcome": readiness });
     if (status) filters.push({ "lifecycle.status": status });
@@ -180,7 +188,11 @@ export class MongoMarketStore extends JsonMarketStore {
     range("pricing.pricePerMeter", minPricePerMeter, maxPricePerMeter);
     range("property.area", minArea, maxArea);
     range("property.rooms", minRooms, undefined);
+    range("property.rooms", undefined, maxRooms);
     range("property.constructionYear", minYear, undefined);
+    range("coordinates.latitude", minLatitude, maxLatitude);
+    range("coordinates.longitude", minLongitude, maxLongitude);
+    if (seenAfter instanceof Date && Number.isFinite(seenAfter.getTime())) filters.push({ lastSeenAt: { $gte: seenAfter } });
     for (const amenity of amenities) filters.push({ [`amenities.${amenity}`]: true });
     const hasScoreFilter = [minScore, maxScore, minConfidence, maxRisk]
       .some(Number.isFinite) || (scoreBand && scoreBand !== "all");
@@ -201,15 +213,29 @@ export class MongoMarketStore extends JsonMarketStore {
       const matchingScores = await this.mongoOperation("catalog-score.filter", () =>
         this.listingScoreModel.find(scoreFilter)
           .select({ token: 1, rank: 1, recommendation: 1, confidence: 1, propertyQuality: 1, risk: 1, band: 1 })
-          .limit(20_000).lean());
+          .limit(2_000).maxTimeMS(queryMaxTimeMs).lean());
       scoreByToken = new Map(matchingScores.map((score) => [score.token, plain(score)]));
       if (!scoreByToken.size) return { total: 0, listings: [] };
       filters.push({ token: { $in: [...scoreByToken.keys()] } });
     }
     const filter = filters.length ? { $and: filters } : {};
+    const sortBy = {
+      newest: { lastSeenAt: -1, token: 1 },
+      "price-asc": { "pricing.price": 1, token: 1 },
+      "price-desc": { "pricing.price": -1, token: 1 },
+      "area-desc": { "property.area": -1, token: 1 },
+    }[sort] || { lastSeenAt: -1, token: 1 };
+    const projection = {
+      _id: 0, schemaVersion: 1, token: 1, url: 1, title: 1, description: 1,
+      category: 1, subcategory: 1, city: 1, district: 1, neighborhood: 1,
+      resolvedLocation: 1, property: 1, propertyDetails: 1, pricing: 1, amenities: 1,
+      images: { $slice: 1 }, imageCount: 1, advertiserType: 1, advertiserSignals: 1,
+      media: 1, coordinates: 1, publication: 1, quality: 1, lifecycle: 1,
+      firstSeenAt: 1, lastSeenAt: 1,
+    };
     const [total, documents] = await this.mongoOperation("listings.query", () => Promise.all([
-      this.listingModel.countDocuments(filter),
-      this.listingModel.find(filter).sort({ lastSeenAt: -1, token: 1 }).skip(offset).limit(limit).lean(),
+      this.listingModel.countDocuments(filter).maxTimeMS(queryMaxTimeMs),
+      this.listingModel.find(filter, projection).sort(sortBy).skip(offset).limit(limit).maxTimeMS(queryMaxTimeMs).lean(),
     ]));
     return { total, listings: documents.map(({ _id, ...document }) => ({
       ...plain(document),
@@ -224,6 +250,20 @@ export class MongoMarketStore extends JsonMarketStore {
       this.listingModel.aggregate([{ $group: { _id: null, minPrice: { $min: "$pricing.price" }, maxPrice: { $max: "$pricing.price" }, minArea: { $min: "$property.area" }, maxArea: { $max: "$property.area" } } }]),
     ]));
     return { districts: districts.sort(), categories: categories.sort(), bounds: bounds[0] || {} };
+  }
+
+  async publicListing(token, { queryMaxTimeMs = 2_000 } = {}) {
+    const projection = {
+      _id: 0, schemaVersion: 1, token: 1, url: 1, title: 1, description: 1,
+      category: 1, subcategory: 1, city: 1, district: 1, neighborhood: 1,
+      resolvedLocation: 1, property: 1, propertyDetails: 1, pricing: 1, amenities: 1,
+      images: 1, imageCount: 1, advertiserType: 1, advertiserSignals: 1, media: 1,
+      coordinates: 1, nearbyPlaces: 1, publication: 1, quality: 1, lifecycle: 1,
+      firstSeenAt: 1, lastSeenAt: 1,
+    };
+    const document = await this.mongoOperation("listings.public-detail", () =>
+      this.listingModel.findOne({ token }, projection).maxTimeMS(queryMaxTimeMs).lean());
+    return document ? plain(document) : null;
   }
 
   async matchBuyerRequirement(requirement, {
@@ -644,20 +684,30 @@ export class MongoMarketStore extends JsonMarketStore {
     return score?.snapshot ? plain(score.snapshot) : null;
   }
 
-  async listingValuation(token) {
-    const active = await this.mongoOperation("valuation.active-model", () =>
+  async listingValuation(token, { queryMaxTimeMs = 2_000 } = {}) {
+    const [active, listing] = await this.mongoOperation("valuation.context", () => Promise.all([
       this.modelVersionModel.findOne({ kind: "batch-price", status: "active" })
-        .select({ modelId: 1, version: 1, generatedAt: 1 }).lean());
-    if (!active) return null;
-    const [score, listing] = await this.mongoOperation("valuation.listing", () => Promise.all([
+        .select({ modelId: 1, version: 1, generatedAt: 1, metrics: 1 }).maxTimeMS(queryMaxTimeMs).lean(),
+      this.listingModel.findOne({ token }).select({ lastSeenAt: 1, quality: 1 }).maxTimeMS(queryMaxTimeMs).lean(),
+    ]));
+    if (!listing) return { token, valuationStatus: "missing-listing", scoringStatus: "missing-listing",
+      estimatedPrice: null, estimatedPricePerMeter: null };
+    if (!active) return { token, valuationStatus: "no-active-model", scoringStatus: "not-ready",
+      estimatedPrice: null, estimatedPricePerMeter: null, dataFreshness: listing.lastSeenAt, quality: listing.quality };
+    const score = await this.mongoOperation("valuation.score", () =>
       this.listingScoreModel.findOne({ modelId: active.modelId, token })
         .select({ scoringVersion: 1, generatedAt: 1, recommendation: 1, confidence: 1, risk: 1,
-          propertyQuality: 1, snapshot: 1 }).lean(),
-      this.listingModel.findOne({ token }).select({ lastSeenAt: 1, quality: 1 }).lean(),
-    ]));
-    if (!score || !listing) return null;
+          propertyQuality: 1, snapshot: 1 }).maxTimeMS(queryMaxTimeMs).lean());
+    if (!score) return { token,
+      valuationStatus: listing.quality?.outcome === "history-only" ? "insufficient-market-data" : "unavailable",
+      scoringStatus: "not-ready", estimatedPrice: null, estimatedPricePerMeter: null,
+      modelId: active.modelId, modelVersion: active.version, dataFreshness: listing.lastSeenAt, quality: listing.quality };
+    const generatedAt = score.generatedAt || active.generatedAt;
+    const stale = Date.now() - new Date(generatedAt).getTime() > 30 * 86_400_000
+      || Date.now() - new Date(listing.lastSeenAt).getTime() > 14 * 86_400_000;
     return {
       token,
+      valuationStatus: stale ? "stale" : "available",
       modelId: active.modelId,
       modelVersion: active.version,
       scoreVersion: score.scoringVersion,
@@ -668,9 +718,11 @@ export class MongoMarketStore extends JsonMarketStore {
       risk: score.risk,
       propertyQuality: score.propertyQuality,
       dataFreshness: listing.lastSeenAt,
-      generatedAt: score.generatedAt || active.generatedAt,
+      generatedAt,
       quality: listing.quality,
-      scoringStatus: "available-experimental",
+      comparableDataQuality: score.snapshot?.evidence?.comparableDataQuality
+        ?? active.metrics?.scoring?.valuationValidation ?? null,
+      scoringStatus: stale ? "stale-experimental" : "available-experimental",
       disclaimer: "Experimental market estimate; not a guaranteed valuation or investment advice.",
     };
   }

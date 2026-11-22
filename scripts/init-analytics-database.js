@@ -13,11 +13,17 @@ function argument(name) {
 }
 
 const apply = process.argv.includes("--apply");
+const allowRemoteTarget = process.argv.includes("--allow-remote-target");
 const backupConfirmed = process.argv.includes("--backup-confirmed");
 const confirmedName = argument("--confirm-database");
 const databaseName = validateAnalyticsDatabaseTarget(config.mongoDbName, apply ? confirmedName : null);
 
 if (!config.mongoUri) throw new Error("MONGODB_URI is required");
+const target = new URL(config.mongoUri);
+const localHosts = new Set(["mongo", "localhost", "127.0.0.1", "::1"]);
+if (!localHosts.has(target.hostname) && !allowRemoteTarget) {
+  throw new Error("Refusing remote MongoDB target without explicit --allow-remote-target approval");
+}
 if (apply && !backupConfirmed) {
   throw new Error("--apply requires --backup-confirmed after the operator verifies backup/restore readiness");
 }

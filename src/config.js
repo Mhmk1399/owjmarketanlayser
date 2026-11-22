@@ -16,6 +16,11 @@ function bool(value, fallback) {
   return value === "true";
 }
 
+function list(value, fallback = []) {
+  if (!value) return fallback;
+  return [...new Set(String(value).split(",").map((item) => item.trim()).filter(Boolean))];
+}
+
 export const config = {
   serviceRoot,
   processRole: process.env.ANALYTICS_PROCESS_ROLE || "all",
@@ -184,6 +189,23 @@ export const config = {
     analystToken: process.env.ANALYTICS_ANALYST_TOKEN || null,
     consultantToken: process.env.ANALYTICS_CONSULTANT_TOKEN || null,
     webServiceToken: process.env.ANALYTICS_WEB_SERVICE_TOKEN || null,
+    legacyHumanTokensEnabled: bool(process.env.ANALYTICS_LEGACY_HUMAN_TOKENS_ENABLED, true),
+  },
+  identity: {
+    environment: process.env.NODE_ENV || "development",
+    enabled: bool(process.env.ANALYTICS_WEB_IDENTITY_ENABLED, false),
+    dashboardOrigin: process.env.ANALYTICS_DASHBOARD_ORIGIN || "http://analytics.owj.localhost",
+    webAuthorizeUrl: process.env.ANALYTICS_WEB_AUTHORIZE_URL || null,
+    webExchangeUrl: process.env.ANALYTICS_WEB_EXCHANGE_URL || null,
+    webStatusUrl: process.env.ANALYTICS_WEB_STATUS_URL || null,
+    serviceToken: process.env.ANALYTICS_TO_WEB_SERVICE_TOKEN || null,
+    sessionSecret: process.env.ANALYTICS_SESSION_SECRET || null,
+    allowedRedirectUris: list(process.env.ANALYTICS_ALLOWED_REDIRECT_URIS,
+      ["http://analytics.owj.localhost/auth/callback"]),
+    allowInsecureLocalCookie: bool(process.env.ANALYTICS_ALLOW_INSECURE_LOCAL_COOKIE, false),
+    sessionLifetimeSeconds: integer(process.env.ANALYTICS_SESSION_LIFETIME_SECONDS, 3_600, 300, 28_800),
+    stateLifetimeSeconds: integer(process.env.ANALYTICS_AUTH_STATE_LIFETIME_SECONDS, 120, 30, 300),
+    timeoutMs: integer(process.env.ANALYTICS_WEB_IDENTITY_TIMEOUT_MS, 2_000, 250, 10_000),
   },
   paths: {
     data: path.join(serviceRoot, "data"),

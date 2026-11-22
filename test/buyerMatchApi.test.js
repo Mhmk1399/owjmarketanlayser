@@ -33,7 +33,7 @@ test("buyer matching API forwards only normalized criteria and returns bounded r
     },
     body: JSON.stringify({ requirement: {
       transactionType: "buy", locations: ["ونک"], maxPrice: 20_000_000_000,
-      notes: "must not cross into matching", createdBy: "browser-value",
+      createdBy: "browser-value",
     }, page: { limit: 100 } }),
   });
   assert.equal(response.status, 200);
@@ -41,8 +41,26 @@ test("buyer matching API forwards only normalized criteria and returns bounded r
   assert.equal(body.matches[0].matchScore, 88);
   assert.equal(received.options.limit, 50);
   assert.equal(received.options.queryMaxTimeMs, 1_500);
-  assert.equal(received.requirement.notes, undefined);
   assert.equal(received.requirement.createdBy, undefined);
+});
+
+test("buyer matching API rejects private CRM notes before store access", async (t) => {
+  let called = false;
+  const server = createAnalyticsServer({
+    config: { search: {}, paths: {}, security: { consultantToken } },
+    store: { async matchBuyerRequirement() { called = true; return {}; } },
+    analytics: {}, crawler: {}, logger: { info() {}, warn() {}, error() {} },
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/buyer-matches/search`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${consultantToken}` },
+    body: JSON.stringify({ requirement: { transactionType: "buy", notes: "private CRM note" } }),
+  });
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error, "buyer-identity-fields-forbidden");
+  assert.equal(called, false);
 });
 
 test("buyer match request schema is strict JSON", async () => {

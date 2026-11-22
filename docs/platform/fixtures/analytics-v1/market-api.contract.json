@@ -1,0 +1,83 @@
+{
+  "contract": "owj.analytics.market-api",
+  "version": "1.0.0",
+  "status": "implemented-and-locally-tested-with-mocks",
+  "authentication": {
+    "audience": "trusted Web backend only",
+    "header": "Authorization: Bearer <ANALYTICS_WEB_SERVICE_TOKEN>",
+    "browserAllowed": false
+  },
+  "limits": {
+    "mongoQueryMaximumMillisecondsDefault": 2000,
+    "responseMaximumBytes": 1048576,
+    "valuationResponseMaximumBytes": 131072,
+    "listingPageMaximum": 40,
+    "buyerPageMaximum": 50,
+    "buyerCandidateMaximumDefault": 500,
+    "buyerRequestMaximumBytes": 64000,
+    "buyerConcurrentMaximumDefault": 4
+  },
+  "units": { "currency": "TOMAN", "area": "square metre", "coordinates": "WGS84 decimal degrees" },
+  "endpoints": {
+    "listingSearch": {
+      "method": "GET",
+      "path": "/internal/v1/listings",
+      "query": {
+        "offset": "integer 0..1000000",
+        "limit": "integer 1..40",
+        "district": "repeatable string; at most 30 applied",
+        "city": "exact string",
+        "area": "exact crawl-area id, name, or slug",
+        "category": "exact ingestion subcategory or crawl category",
+        "transactionType": "buy|rent",
+        "advertiserType": "personal|real-estate-business|unknown",
+        "q": "escaped case-insensitive public text search",
+        "readiness": "scoring-ready|history-only",
+        "status": "active|not-seen|possibly-removed|removed",
+        "minPrice|maxPrice|minPricePerMeter|maxPricePerMeter|minArea|maxArea|minRooms|maxRooms|minYear": "non-negative number",
+        "amenity": "repeatable allowlisted ASCII amenity key",
+        "seenAfter": "RFC 3339 date-time",
+        "minLatitude|maxLatitude|minLongitude|maxLongitude": "number",
+        "minScore|maxScore|minConfidence|maxRisk": "number",
+        "scoreBand": "existing score band",
+        "sort": "newest|price-asc|price-desc|area-desc"
+      },
+      "responseRequired": ["schemaVersion", "generatedAt", "total", "offset", "limit", "hasMore", "listings"],
+      "listingProjection": ["schemaVersion", "token", "url", "title", "description", "category", "subcategory", "city", "district", "neighborhood", "resolvedLocation", "property", "propertyDetails", "pricing", "amenities", "first image", "imageCount", "advertiserType", "advertiserSignals", "media", "rounded coordinates", "publication", "quality", "lifecycle", "firstSeenAt", "lastSeenAt", "optional marketScore"],
+      "empty": { "total": 0, "offset": 0, "limit": 40, "hasMore": false, "listings": [] }
+    },
+    "listingDetail": {
+      "method": "GET",
+      "path": "/internal/v1/listings/:token",
+      "tokenPattern": "^[A-Za-z0-9_-]+$",
+      "projection": "safe public listing projection; coordinates rounded to four decimals",
+      "missing": { "status": 404, "error": "listing-not-found" }
+    },
+    "buyerMatches": {
+      "method": "POST",
+      "path": "/internal/v1/buyer-matches/search",
+      "request": {
+        "additionalProperties": "discarded after explicit private-field rejection",
+        "requirement": ["transactionType", "propertyTypes", "locations", "minPrice", "maxPrice", "minDeposit", "maxDeposit", "minRent", "maxRent", "minArea", "maxArea", "minRooms", "maxBuildingAge", "requiredAmenities", "optionalAmenities", "urgency", "financingStatus"],
+        "page": { "limit": "1..50", "cursor": "opaque criteria-bound base64url or null" }
+      },
+      "forbiddenAtAnyDepth": ["customer", "customerName", "name", "phone", "phoneNumber", "email", "contact", "contactId", "crmContact", "crmRecord", "messages", "notes", "salesNotes", "userId", "webUserId", "session", "sessionToken", "accessToken", "authorization"],
+      "responseRequired": ["schemaVersion", "generatedAt", "requirement", "total", "evaluated", "truncated", "nextCursor", "model", "matches"]
+    },
+    "valuation": {
+      "method": "GET",
+      "path": "/internal/v1/listings/:token/valuation",
+      "neverTrainsInRequest": true,
+      "statuses": ["available", "insufficient-market-data", "no-active-model", "missing-listing", "stale", "unavailable"],
+      "numericEstimateRule": "estimatedPrice and estimatedPricePerMeter are null unless an existing active-model score contains them",
+      "missingListingHttpStatus": 404,
+      "otherNotReadyHttpStatus": 200
+    }
+  },
+  "error": {
+    "required": ["error"],
+    "optional": ["message", "requestId", "requiredRole", "token"],
+    "statuses": [400, 401, 403, 404, 413, 503]
+  }
+}
+

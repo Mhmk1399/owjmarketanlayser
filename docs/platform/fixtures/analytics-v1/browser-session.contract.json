@@ -1,0 +1,39 @@
+{
+  "contract": "owj.analytics.browser.session",
+  "version": 1,
+  "status": "implemented-and-mock-tested",
+  "endpoints": {
+    "current": {
+      "method": "GET",
+      "path": "/auth/v1/analytics/session",
+      "query": { "redirectUri": { "requiredWhenUnauthenticated": true, "exactAllowlist": true } },
+      "unauthenticatedResponse": ["authenticated", "state", "redirectUri", "authorizeUrl", "expiresAt"]
+    },
+    "exchange": {
+      "method": "POST",
+      "path": "/auth/v1/analytics/session",
+      "maximumRequestBytes": 8192,
+      "requiredBrowserOrigin": "exact ANALYTICS_DASHBOARD_ORIGIN",
+      "request": ["code", "codeVerifier", "state", "redirectUri"]
+    },
+    "logout": {
+      "method": "POST",
+      "path": "/auth/v1/analytics/logout",
+      "maximumRequestBytes": 1024,
+      "requiredBrowserOrigin": "exact ANALYTICS_DASHBOARD_ORIGIN"
+    }
+  },
+  "cookie": {
+    "name": "owj_analytics_session",
+    "opaqueRandomBytes": 32,
+    "serverStoredValue": "HMAC-SHA-256 digest only",
+    "hostOnly": true,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "Lax",
+    "path": "/",
+    "maximumLifetimeSeconds": 28800,
+    "localhostHttpException": "ANALYTICS_ALLOW_INSECURE_LOCAL_COOKIE=true in non-production *.localhost only"
+  }
+}
+

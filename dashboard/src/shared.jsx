@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
+import { useAnalyticsSession } from "./AuthGate.jsx";
 
 /*
  * OWJ shared UI
@@ -124,6 +125,7 @@ const GLOBAL_CSS = `
     -moz-osx-font-smoothing: grayscale;
   }
   body { margin: 0; }
+  body[data-analytics-can-operate="false"] .place-card__crawl-button { display: none !important; }
   input, button, select, textarea { font-family: inherit; }
   button, a { -webkit-tap-highlight-color: transparent; }
   ::-webkit-scrollbar { width: 6px; height: 6px; }
@@ -527,6 +529,7 @@ export function AppNavigation({ active, className = "" }) {
 }
 
 export function AppHeader({ active }) {
+  const { session, logout } = useAnalyticsSession();
   return (
     <header className="owj-app-header">
       <div className="owj-app-header__inner">
@@ -541,6 +544,12 @@ export function AppHeader({ active }) {
         </a>
 
         <AppNavigation active={active} />
+        {session ? (
+          <button type="button" className="owj-app-header__logout" onClick={() => void logout()}
+            aria-label="خروج از سامانه تحلیل بازار">
+            خروج
+          </button>
+        ) : null}
       </div>
     </header>
   );

@@ -8,6 +8,7 @@ import ListingsPage from "./ListingsPage.jsx";
 import SavedListingDetailPage from "./SavedListingDetailPage.jsx";
 import DataQualityPage from "./DataQualityPage.jsx";
 import BuyerMatchingPage from "./BuyerMatchingPage.jsx";
+import AuthGate from "./AuthGate.jsx";
 import "./typography.css";
 import "./styles.css";
 
@@ -27,6 +28,6 @@ function AppRouter() {
 
 createRoot(document.getElementById("root")).render(
   <StrictMode>
-    <AppRouter />
+    <AuthGate><AppRouter /></AuthGate>
   </StrictMode>,
 );

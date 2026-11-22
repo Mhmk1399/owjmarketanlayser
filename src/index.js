@@ -9,7 +9,10 @@ import { LiveScoringService } from "./scoring/liveScoring.js";
 import { validateCredentialConfiguration } from "./security/authorization.js";
 
 process.chdir(config.serviceRoot);
-validateCredentialConfiguration(config.security, { crawlerControlToken: config.crawlerControl.token });
+validateCredentialConfiguration({
+  ...config.security,
+  analyticsToWebServiceToken: config.identity.serviceToken,
+}, { crawlerControlToken: config.crawlerControl.token });
 
 const logger = new StructuredLogger({
   file: config.paths.logFile,

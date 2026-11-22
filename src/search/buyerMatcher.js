@@ -9,6 +9,29 @@ export const BUYER_MATCH_AMENITIES = Object.freeze([
 const urgencyValues = new Set(["low", "normal", "high", "immediate"]);
 const financingValues = new Set(["unknown", "ready", "needs_financing", "not_ready"]);
 const amenitySet = new Set(BUYER_MATCH_AMENITIES);
+const forbiddenBuyerFields = new Set([
+  "customer", "customerName", "name", "phone", "phoneNumber", "email", "contact",
+  "contactId", "crmContact", "crmRecord", "messages", "notes", "salesNotes", "userId",
+  "webUserId", "session", "sessionToken", "accessToken", "authorization",
+]);
+
+export function assertBuyerCriteriaPrivacy(input = {}) {
+  const found = [];
+  const visit = (value, path = "") => {
+    if (!value || typeof value !== "object") return;
+    for (const [key, nested] of Object.entries(value)) {
+      const next = path ? `${path}.${key}` : key;
+      if (forbiddenBuyerFields.has(key)) found.push(next);
+      if (nested && typeof nested === "object") visit(nested, next);
+    }
+  };
+  visit(input);
+  if (found.length) {
+    throw Object.assign(new Error(`Buyer criteria must not contain CRM identity fields: ${found.join(", ")}`), {
+      status: 400, code: "buyer-identity-fields-forbidden",
+    });
+  }
+}
 
 function optionalNumber(value, name) {
   if (value === null || value === undefined || value === "") return null;
@@ -37,6 +60,7 @@ function currentPersianYear() {
 }
 
 export function normalizeBuyerMatchRequest(input = {}) {
+  assertBuyerCriteriaPrivacy(input);
   const transactionType = input.transactionType || "buy";
   if (!["buy", "rent"].includes(transactionType)) {
     throw Object.assign(new Error("transactionType must be buy or rent"), { status: 400 });

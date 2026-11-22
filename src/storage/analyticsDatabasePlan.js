@@ -7,8 +7,9 @@ import { CrawlCycle, AreaCrawlJob } from "../models/crawlJob.js";
 import { ScoringScenario } from "../models/scoringScenario.js";
 import { BuyerRequirement } from "../models/buyerRequirement.js";
 import { DriftMetric, ListingScore, ModelVersion, TrainingRun } from "../models/scoringState.js";
+import { AnalyticsAuthState, AnalyticsSession } from "../models/analyticsSession.js";
 
-export const ANALYTICS_SCHEMA_VERSION = "2026-11-20.1";
+export const ANALYTICS_SCHEMA_VERSION = "2026-11-22.1";
 
 export const ANALYTICS_MODELS = Object.freeze([
   Listing,
@@ -25,6 +26,8 @@ export const ANALYTICS_MODELS = Object.freeze([
   DriftMetric,
   ScoringScenario,
   BuyerRequirement,
+  AnalyticsSession,
+  AnalyticsAuthState,
 ]);
 
 const FORBIDDEN_DATABASE_NAMES = new Set([

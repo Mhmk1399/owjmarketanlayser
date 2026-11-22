@@ -1,5 +1,7 @@
 # Analytics Sprint 1 Handoff and Exact Work Log
 
+> Historical snapshot: this file records Sprint 1. Sprint 3 adds Web-backed opaque sessions, two session collections, expanded search/valuation behavior, and local Docker compatibility. Current contracts are in `ANALYTICS_WEB_IDENTITY_CONTRACT_V1.md`, `ANALYTICS_SSO_CONTRACT_V1.md`, `ANALYTICS_WEB_SEARCH_CONTRACT_V1.md`, and `ANALYTICS_SPRINT_3_HANDOFF.md`; the Sprint 1 file list and test count below remain historical facts rather than a description of the current tree.
+
 **Date:** 2026-11-20  
 **Repository only:** `owj-market-analytics`  
 **Base:** `main` at `15b89b260c1fb040477c91aa447abdff0a29a691`  
