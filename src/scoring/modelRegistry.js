@@ -121,14 +121,22 @@ export async function persistScoringGeneration({ report, modelDocument, scoredDo
     metrics: { cleaning: report.cleaning, modelValidation: report.modelValidation, scoring: report.scoring },
     error: null,
   };
-  await modelVersionModel.create(model);
-  await trainingRunModel.create(training);
+  let candidateCreated = false;
+  let trainingCreated = false;
+  let scoreWritesStarted = false;
   try {
+    await modelVersionModel.create(model);
+    candidateCreated = true;
+    await trainingRunModel.create(training);
+    trainingCreated = true;
     for (let offset = 0; offset < rows.length; offset += chunkSize) {
       const batch = rows.slice(offset, offset + chunkSize).map((row) => ({
         insertOne: { document: scoreDocument(row, { runId, modelId, scoringVersion: scoredDocument.scoringVersion, generatedAt }) },
       }));
-      if (batch.length) await listingScoreModel.bulkWrite(batch, { ordered: false });
+      if (batch.length) {
+        scoreWritesStarted = true;
+        await listingScoreModel.bulkWrite(batch, { ordered: false });
+      }
     }
     const drift = calculateDrift(baseline, model);
     const driftDocument = {
@@ -146,11 +154,12 @@ export async function persistScoringGeneration({ report, modelDocument, scoredDo
         { $set: { status: "archived", archivedAt: new Date() } },
         options,
       );
-      await modelVersionModel.updateOne(
+      const promotion = await modelVersionModel.updateOne(
         { modelId, status: "candidate" },
         { $set: { status: "active", promotedAt: new Date(), archivedAt: null } },
         options,
       );
+      if (promotion?.matchedCount === 0) throw new Error("scoring-candidate-promotion-conflict");
       await trainingRunModel.updateOne(
         { runId },
         { $set: { status: "completed", endedAt: report.endedAt, durationMs: report.durationMs } },
@@ -176,10 +185,23 @@ export async function persistScoringGeneration({ report, modelDocument, scoredDo
     }
     return { runId, modelId, drift: driftDocument, scoreCount: rows.length };
   } catch (error) {
-    await Promise.allSettled([
-      modelVersionModel.updateOne({ modelId }, { $set: { status: "failed" } }),
-      trainingRunModel.updateOne({ runId }, { $set: { status: "failed", endedAt: new Date(), error: error.message } }),
-    ]);
+    // A replica-set transaction rolls the promotion back. These compensating
+    // updates also keep standalone/local adapters safe if publication fails
+    // after the previous model was archived.
+    if (candidateCreated) await modelVersionModel.updateOne(
+      { modelId }, { $set: { status: "failed" } },
+    ).catch(() => {});
+    if (candidateCreated && baseline) await modelVersionModel.updateOne(
+      { modelId: baseline.modelId, status: "archived" },
+      { $set: { status: "active", archivedAt: null } },
+    ).catch(() => {});
+    if (scoreWritesStarted && typeof listingScoreModel.deleteMany === "function") {
+      await listingScoreModel.deleteMany({ modelId }).catch(() => {});
+    }
+    if (trainingCreated) await trainingRunModel.updateOne(
+      { runId },
+      { $set: { status: "failed", endedAt: new Date(), error: error.message } },
+    ).catch(() => {});
     throw error;
   }
 }

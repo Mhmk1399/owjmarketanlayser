@@ -15,7 +15,7 @@ validateCredentialConfiguration({
 const logger = await createLogger("api");
 const monitor = new ResourceMonitor({ logger, role: "api", intervalMs: config.resourceLogIntervalMs });
 monitor.start();
-const store = await createStore(logger, { reconcileCrawlerState: false });
+const store = await createStore(logger, { reconcileCrawlerState: false, processRole: "api" });
 const analytics = new LiveMarketEngine({
   store, logger,
   minSpatialSample: config.analytics.minSpatialSample,

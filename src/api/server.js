@@ -523,6 +523,7 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
         ]);
         return sendJson(response, 200, buildDataQualityBaseline({
           listings: store.getListings(), scoredDocument, scoringReport,
+          workingSet: typeof store.cacheStatus === "function" ? store.cacheStatus() : null,
         }));
       }
 
@@ -557,7 +558,7 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
             };
           }
         }
-        return sendJson(response, 200, buildDashboardPayload({
+        const payload = buildDashboardPayload({
           crawl: dashboardCrawl,
           analyticsDocument,
           listings: store.getListings(),
@@ -565,7 +566,21 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
           recommendationAnalyses: recommendationAnalysisCache.value,
           scoredDocument,
           recentEvents: logger.getRecent(40),
-        }));
+        });
+        const workingSet = typeof store.cacheStatus === "function" ? store.cacheStatus() : {
+          cachedListings: store.getListings().length, totalListings: store.getListings().length,
+          complete: true, authority: "json",
+        };
+        return sendJson(response, 200, {
+          ...payload,
+          overview: {
+            ...payload.overview,
+            storedListings: workingSet.totalListings,
+            analyzedListings: payload.overview.storedListings,
+            metricsScope: workingSet.complete ? "complete" : "bounded-recent-working-set",
+          },
+          workingSet,
+        });
       }
 
       if (request.method === "GET" && url.pathname === "/scores") {

@@ -27,4 +27,8 @@ test("data quality baseline separates eligible-unscored records from blockers", 
   assert.equal(baseline.coverage.find((item) => item.key === "description").percent, 50);
   assert.ok(baseline.blockers.some((item) => item.reason === "not-scoring-ready"));
   assert.ok(baseline.blockers.some((item) => item.reason === "invalid-or-implausible-area"));
+  assert.equal(baseline.freshness.notObservedWithin7Days, 0);
+  assert.equal(baseline.freshness.missingPropertyCharacteristics, 2);
+  assert.equal(baseline.freshness.modelStatus, "current");
+  assert.match(baseline.freshness.valuationGuidance, /valuationStatus/);
 });

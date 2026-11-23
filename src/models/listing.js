@@ -90,6 +90,11 @@ export const listingSchema = new Schema({
 }, { strict: "throw", versionKey: false, minimize: false });
 
 listingSchema.index({ token: 1 }, { unique: true });
+listingSchema.index({ lastSeenAt: -1, token: 1 }, { name: "listing_recent_cache_and_catalog" });
+listingSchema.index(
+  { "lifecycle.status": 1, lastSeenAt: -1, token: 1 },
+  { name: "listing_lifecycle_recent_catalog" },
+);
 listingSchema.index({ "images.url": 1, subcategory: 1, "property.area": 1 }, { name: "public_property_link_candidates" });
 listingSchema.index({ subcategory: 1, neighborhood: 1, "pricing.price": 1 });
 listingSchema.index({ "resolvedLocation.neighborhoodId": 1, lastSeenAt: -1 });

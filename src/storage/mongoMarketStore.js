@@ -39,6 +39,8 @@ export class MongoMarketStore extends JsonMarketStore {
     mongoRetry = {},
     mongoAutoIndex = false,
     reconcileCrawlerState = true,
+    listingCacheLimit = 5_000,
+    processRole = "api",
     activityModel = ListingActivity,
     propertyLinkModel = ListingPropertyLink,
   } = {}) {
@@ -58,6 +60,9 @@ export class MongoMarketStore extends JsonMarketStore {
     this.mongoRetry = mongoRetry;
     this.mongoAutoIndex = mongoAutoIndex;
     this.reconcileCrawlerState = reconcileCrawlerState;
+    this.listingCacheLimit = Math.max(0, Math.floor(listingCacheLimit));
+    this.processRole = processRole;
+    this.totalListingCount = 0;
     this.mongo = null;
     this.crawlQueue = new DurableCrawlQueue();
     this.activityModel = activityModel;
@@ -74,6 +79,41 @@ export class MongoMarketStore extends JsonMarketStore {
         });
       },
     });
+  }
+
+  cacheListing(listing) {
+    if (!listing || !this.listingCacheLimit) return listing;
+    // Map insertion order acts as a small LRU. Reads from Mongo refresh an
+    // entry, and the oldest cached document is discarded at the hard limit.
+    this.listings.delete(listing.token);
+    this.listings.set(listing.token, listing);
+    while (this.listings.size > this.listingCacheLimit) {
+      this.listings.delete(this.listings.keys().next().value);
+    }
+    return listing;
+  }
+
+  hydrateListingCache(documents = [], total = documents.length) {
+    this.listings.clear();
+    // Mongo returns newest first. Insert in reverse order so later LRU
+    // eviction removes the oldest cached listing, not the newest one.
+    for (const document of [...documents].reverse()) {
+      const { _id, ...value } = document;
+      this.cacheListing(plain(value));
+    }
+    this.totalListingCount = total;
+    return this.cacheStatus();
+  }
+
+  cacheStatus() {
+    return {
+      role: this.processRole,
+      cachedListings: this.listings.size,
+      totalListings: this.totalListingCount,
+      limit: this.listingCacheLimit,
+      complete: this.totalListingCount <= this.listings.size,
+      authority: "mongodb",
+    };
   }
 
   async init() {
@@ -100,15 +140,18 @@ export class MongoMarketStore extends JsonMarketStore {
       this.activityModel.init(),
       this.propertyLinkModel.init(),
     ]);
-    const documents = await this.listingModel.find({}).batchSize(1000).lean();
-    this.listings.clear();
-    for (const { _id, ...document } of documents) {
-      const listing = plain(document);
-      this.listings.set(listing.token, listing);
-    }
+    const [total, documents] = await this.mongoOperation("listing-cache.hydrate", () => Promise.all([
+      this.listingModel.countDocuments({}),
+      this.listingCacheLimit
+        ? this.listingModel.find({}).sort({ lastSeenAt: -1, token: 1 })
+          .limit(this.listingCacheLimit).lean()
+        : Promise.resolve([]),
+    ]));
+    const cache = this.hydrateListingCache(documents, total);
     if (this.reconcileCrawlerState) await this.reconcileInterruptedRun();
     this.logger.info("store.mongo.ready", "MongoDB is the authoritative listing store", {
-      listingCount: this.listings.size,
+      listingCount: total,
+      cache,
       database: mongoose.connection.name,
       jsonRole: "derived-compatibility-snapshot",
     });
@@ -314,12 +357,12 @@ export class MongoMarketStore extends JsonMarketStore {
   }
 
   async updateNearbyPlaces(token, nearbyPlaces) {
-    const existing = this.listings.get(token);
+    const existing = this.listings.get(token) || await this.loadListing(token);
     if (!existing) return null;
     const merged = { ...existing, nearbyPlaces };
     await this.mongoOperation("listing.nearby.update", () =>
       this.listingModel.replaceOne({ token }, merged, { upsert: false, runValidators: true }));
-    this.listings.set(token, merged);
+    this.cacheListing(merged);
     return merged;
   }
 
@@ -328,7 +371,7 @@ export class MongoMarketStore extends JsonMarketStore {
     const document = await this.listingModel.findOne({ token }).lean();
     if (!document) return null;
     const { _id, ...listing } = plain(document);
-    this.listings.set(token, listing);
+    this.cacheListing(listing);
     return listing;
   }
 
@@ -442,7 +485,8 @@ export class MongoMarketStore extends JsonMarketStore {
         await this.mongo.connection.transaction((session) => persist(session));
       } else await persist();
     });
-    this.listings.set(merged.token, plain(merged));
+    this.totalListingCount += existing ? 0 : 1;
+    this.cacheListing(plain(merged));
     if (!existing) await this.recordPossiblePropertyLinks(merged).catch((error) => {
       this.logger.warn("listing.property-link.deferred", "Possible property link lookup failed; listing remains identity-unresolved", {
         token: merged.token, errorCode: error.code || "property-link-query-failed",
@@ -474,7 +518,7 @@ export class MongoMarketStore extends JsonMarketStore {
     };
     if (this.mongo?.connection?.transaction) await this.mongo.connection.transaction(persist);
     else await persist();
-    this.listings.set(token, plain(merged));
+    this.cacheListing(plain(merged));
     return plain(merged);
   }
 
@@ -482,8 +526,24 @@ export class MongoMarketStore extends JsonMarketStore {
     const observed = new Set(observedTokens);
     const completed = new Set([...completedAreaIds].map(Number));
     const summary = { active: 0, notSeen: 0, possiblyRemoved: 0, removed: 0 };
-    const changes = [];
-    for (const [token, listing] of this.listings) {
+    const cachedOrStreamed = async function* (store) {
+      const query = store.listingModel.find({
+        "crawlPartition.area.id": { $in: [...completed] },
+        "lifecycle.lastReconciledCycleId": { $ne: runId },
+        "lifecycle.lastConfirmedRunId": { $ne: runId },
+      });
+      if (typeof query?.select === "function" && typeof query?.lean === "function") {
+        const cursor = query.select({
+          _id: 0, token: 1, contentFingerprint: 1, pricing: 1, lifecycle: 1,
+          lastSeenAt: 1, "crawlPartition.area.id": 1,
+        }).lean().cursor({ batchSize: 500 });
+        for await (const listing of cursor) yield plain(listing);
+        return;
+      }
+      for (const listing of store.listings.values()) yield listing;
+    };
+    for await (const listing of cachedOrStreamed(this)) {
+      const token = listing.token;
       const areaId = Number(listing.crawlPartition?.area?.id);
       if (!completed.has(areaId) || observed.has(token) || listing.lifecycle?.lastReconciledCycleId === runId) continue;
       const misses = (listing.lifecycle?.consecutiveMisses || 0) + 1;
@@ -494,28 +554,23 @@ export class MongoMarketStore extends JsonMarketStore {
         lastConfirmedRunId: listing.lifecycle?.lastConfirmedRunId ?? null,
         lastReconciledCycleId: runId,
       } };
-      changes.push({ token, merged, previous: listing });
-    }
-    if (changes.length) {
-      for (const { token, merged, previous } of changes) {
-        let matched = false;
-        const persist = async (session = null) => {
-          const result = await this.listingModel.updateOne({
-            token, "lifecycle.lastReconciledCycleId": { $ne: runId },
-            "lifecycle.lastConfirmedRunId": { $ne: runId },
-            "lifecycle.consecutiveMisses": previous.lifecycle?.consecutiveMisses || 0,
-            "lifecycle.lastDiscoveredAt": previous.lifecycle?.lastDiscoveredAt || null,
-          }, { $set: { lifecycle: merged.lifecycle } }, { runValidators: true, ...(session ? { session } : {}) });
-          matched = Boolean(result.matchedCount);
-          if (matched) await this.writeListingActivities(lifecycleActivities(previous, merged, runId, now), session);
-        };
-        if (this.mongo?.connection?.transaction) await this.mongo.connection.transaction(persist);
-        else await persist();
-        if (matched) {
-          this.listings.set(token, plain(merged));
-          const status = merged.lifecycle.status;
-          summary[status === "not-seen" ? "notSeen" : status === "possibly-removed" ? "possiblyRemoved" : status] += 1;
-        }
+      let matched = false;
+      const persist = async (session = null) => {
+        const result = await this.listingModel.updateOne({
+          token, "lifecycle.lastReconciledCycleId": { $ne: runId },
+          "lifecycle.lastConfirmedRunId": { $ne: runId },
+          "lifecycle.consecutiveMisses": listing.lifecycle?.consecutiveMisses || 0,
+          "lifecycle.lastDiscoveredAt": listing.lifecycle?.lastDiscoveredAt || null,
+        }, { $set: { lifecycle: merged.lifecycle } }, { runValidators: true, ...(session ? { session } : {}) });
+        matched = Boolean(result.matchedCount);
+        if (matched) await this.writeListingActivities(lifecycleActivities(listing, merged, runId, now), session);
+      };
+      if (this.mongo?.connection?.transaction) await this.mongo.connection.transaction(persist);
+      else await persist();
+      if (matched) {
+        this.cacheListing(plain(merged));
+        const updatedStatus = merged.lifecycle.status;
+        summary[updatedStatus === "not-seen" ? "notSeen" : updatedStatus === "possibly-removed" ? "possiblyRemoved" : updatedStatus] += 1;
       }
     }
     return summary;

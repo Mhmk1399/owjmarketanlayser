@@ -34,6 +34,12 @@ export const config = {
     baseDelayMs: integer(process.env.MONGODB_RETRY_BASE_DELAY_MS, 1_000, 100, 60_000),
     maxDelayMs: integer(process.env.MONGODB_RETRY_MAX_DELAY_MS, 30_000, 1_000, 300_000),
   },
+  listingCache: {
+    // The cache only feeds the legacy synchronous analytics/dashboard code.
+    // Authoritative listing/search/detail reads remain MongoDB queries.
+    apiLimit: integer(process.env.ANALYTICS_API_LISTING_CACHE_LIMIT, 5_000, 100, 25_000),
+    crawlerLimit: integer(process.env.ANALYTICS_CRAWLER_LISTING_CACHE_LIMIT, 10_000, 100, 50_000),
+  },
   neshanMapKey: process.env.NEXT_PUBLIC_NESHAN_MAP_KEY || null,
   // Service keys belong on the server. A public web-map key is intentionally
   // never reused for Nearby Search or Routing because Neshan scopes key types.

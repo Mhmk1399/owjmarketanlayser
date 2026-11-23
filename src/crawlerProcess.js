@@ -12,7 +12,7 @@ validateCrawlerControlCredential(config.crawlerControl.token);
 const logger = await createLogger("crawler");
 const monitor = new ResourceMonitor({ logger, role: "crawler", intervalMs: config.resourceLogIntervalMs });
 monitor.start();
-const store = await createStore(logger, { reconcileCrawlerState: true });
+const store = await createStore(logger, { reconcileCrawlerState: true, processRole: "crawler" });
 const analytics = new LiveMarketEngine({
   store, logger,
   minSpatialSample: config.analytics.minSpatialSample,

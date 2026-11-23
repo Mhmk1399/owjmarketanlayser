@@ -1,16 +1,17 @@
-import { StrictMode } from "react";
+import { lazy, StrictMode, Suspense } from "react";
 import { createRoot } from "react-dom/client";
-import AnalyticsDashboard from "./AnalyticsDashboard.jsx";
-import ScoringAnalyticsPage from "./ScoringAnalyticsPage.jsx";
-import LocationExplorer from "./LocationExplorer.jsx";
-import ScoringWorkshopPage from "./ScoringWorkshopPage.jsx";
-import ListingsPage from "./ListingsPage.jsx";
-import SavedListingDetailPage from "./SavedListingDetailPage.jsx";
-import DataQualityPage from "./DataQualityPage.jsx";
-import BuyerMatchingPage from "./BuyerMatchingPage.jsx";
 import AuthGate from "./AuthGate.jsx";
 import "./typography.css";
 import "./styles.css";
+
+const AnalyticsDashboard = lazy(() => import("./AnalyticsDashboard.jsx"));
+const ScoringAnalyticsPage = lazy(() => import("./ScoringAnalyticsPage.jsx"));
+const LocationExplorer = lazy(() => import("./LocationExplorer.jsx"));
+const ScoringWorkshopPage = lazy(() => import("./ScoringWorkshopPage.jsx"));
+const ListingsPage = lazy(() => import("./ListingsPage.jsx"));
+const SavedListingDetailPage = lazy(() => import("./SavedListingDetailPage.jsx"));
+const DataQualityPage = lazy(() => import("./DataQualityPage.jsx"));
+const BuyerMatchingPage = lazy(() => import("./BuyerMatchingPage.jsx"));
 
 function AppRouter() {
   const path = window.location.pathname.replace(/\/$/, "") || "/";
@@ -28,6 +29,10 @@ function AppRouter() {
 
 createRoot(document.getElementById("root")).render(
   <StrictMode>
-    <AuthGate><AppRouter /></AuthGate>
+    <AuthGate>
+      <Suspense fallback={<main dir="rtl" role="status" aria-live="polite"><p>در حال بارگذاری…</p></main>}>
+        <AppRouter />
+      </Suspense>
+    </AuthGate>
   </StrictMode>,
 );

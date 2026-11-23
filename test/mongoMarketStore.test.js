@@ -20,6 +20,48 @@ function listing(now = "2026-10-26T00:00:00.000Z") {
   }, null, now, { category: "buy-apartment", expectedSubcategory: "buy-residential-apartment", area: null });
 }
 
+test("Mongo listing cache remains bounded and evicts the oldest cached listing", () => {
+  const store = new MongoMarketStore({}, logger, { listingCacheLimit: 2, processRole: "api" });
+  const status = store.hydrateListingCache([
+    { token: "newest", lastSeenAt: "2026-11-03T00:00:00.000Z" },
+    { token: "older", lastSeenAt: "2026-11-02T00:00:00.000Z" },
+  ], 50_000);
+  assert.deepEqual(status, {
+    role: "api", cachedListings: 2, totalListings: 50_000,
+    limit: 2, complete: false, authority: "mongodb",
+  });
+  store.cacheListing({ token: "latest", lastSeenAt: "2026-11-04T00:00:00.000Z" });
+  assert.deepEqual([...store.listings.keys()], ["newest", "latest"]);
+  assert.equal(store.getListing("older"), null);
+});
+
+test("Mongo lifecycle reconciliation streams completed-area records independently of cache contents", async () => {
+  const updates = [];
+  const rows = [
+    { token: "missing-one", contentFingerprint: "a".repeat(64), pricing: { price: 1 }, lastSeenAt: "2026-11-20T00:00:00.000Z",
+      crawlPartition: { area: { id: 101 } }, lifecycle: { status: "active", consecutiveMisses: 0, lastDiscoveredAt: null } },
+    { token: "observed-one", contentFingerprint: "b".repeat(64), pricing: { price: 1 }, lastSeenAt: "2026-11-20T00:00:00.000Z",
+      crawlPartition: { area: { id: 101 } }, lifecycle: { status: "active", consecutiveMisses: 0, lastDiscoveredAt: null } },
+  ];
+  const query = {
+    select() { return this; }, lean() { return this; },
+    cursor() { return (async function* () { for (const row of rows) yield row; }()); },
+  };
+  const listingModel = {
+    find() { return query; },
+    async updateOne(filter, update) { updates.push({ filter, update }); return { matchedCount: 1 }; },
+  };
+  const store = new MongoMarketStore({}, logger, { listingModel, listingCacheLimit: 1 });
+  const result = await store.reconcileLifecycle({
+    runId: "cycle-one", observedTokens: ["observed-one"], completedAreaIds: [101], removalThreshold: 3,
+  });
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].filter.token, "missing-one");
+  assert.equal(updates[0].update.$set.lifecycle.status, "not-seen");
+  assert.equal(result.notSeen, 1);
+  assert.equal(store.getListing("missing-one").lifecycle.lastReconciledCycleId, "cycle-one");
+});
+
 test("Mongo listing pages apply filters, stable ordering, skip and a 40-item limit in MongoDB", async () => {
   const calls = [];
   const chain = {

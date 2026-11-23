@@ -18,7 +18,10 @@ function countBy(listings, selector) {
   return [...counts.entries()].map(([key, count]) => ({ key, count })).sort((a, b) => b.count - a.count);
 }
 
-export function buildDataQualityBaseline({ listings = [], scoredDocument = null, scoringReport = null, now = new Date().toISOString() } = {}) {
+export function buildDataQualityBaseline({
+  listings = [], scoredDocument = null, scoringReport = null,
+  now = new Date().toISOString(), workingSet = null,
+} = {}) {
   const scoredListings = scoredDocument?.listings || [];
   const scoredTokens = new Set(scoredListings.map((item) => item.token));
   const scoringGeneratedAt = scoredDocument?.generatedAt || null;
@@ -46,14 +49,53 @@ export function buildDataQualityBaseline({ listings = [], scoredDocument = null,
     coverageMetric(listings, "advertiser-classified", (item) => ["personal", "real-estate-business"].includes(item.advertiserType)),
     coverageMetric(listings, "nearby-places", (item) => Array.isArray(item.nearbyPlaces) && item.nearbyPlaces.length > 0),
   ];
+  const nowMs = Date.parse(now);
+  const staleListingCutoff = nowMs - 7 * 86_400_000;
+  const staleModelCutoff = nowMs - 30 * 86_400_000;
+  const notRecentlyObserved = listings.filter((item) => {
+    const seen = Date.parse(item.lastSeenAt);
+    return !Number.isFinite(seen) || seen < staleListingCutoff;
+  }).length;
+  const missingPropertyCharacteristics = listings.filter((item) => (
+    !Number.isFinite(item.property?.area) || !Number.isFinite(item.property?.rooms)
+  )).length;
+  const missingPricing = listings.filter((item) => (
+    !Number.isFinite(item.pricing?.price)
+    && !Number.isFinite(item.pricing?.deposit)
+    && !Number.isFinite(item.pricing?.rent)
+  )).length;
+  const insufficientComparables = listings.filter((item) => (
+    !Number.isFinite(item.coordinates?.latitude)
+    || !Number.isFinite(item.coordinates?.longitude)
+    || !Array.isArray(item.nearbyPlaces)
+    || item.nearbyPlaces.length < 5
+  )).length;
+  const modelGeneratedMs = Date.parse(scoringGeneratedAt);
 
+  const workingSetStatus = workingSet || {
+    cachedListings: listings.length, totalListings: listings.length,
+    complete: true, authority: "in-memory",
+  };
   return {
     schemaVersion: "1.0.0",
     generatedAt: now,
     inventory: {
-      total: listings.length,
+      total: workingSetStatus.totalListings,
+      analyzed: listings.length,
       active: listings.filter((item) => item.lifecycle?.status === "active").length,
       latestListingAt: listings.reduce((latest, item) => !latest || String(item.lastSeenAt) > latest ? String(item.lastSeenAt) : latest, null),
+    },
+    workingSet: workingSetStatus,
+    freshness: {
+      notObservedWithin7Days: notRecentlyObserved,
+      possiblyRemoved: listings.filter((item) => item.lifecycle?.status === "possibly-removed").length,
+      removed: listings.filter((item) => item.lifecycle?.status === "removed").length,
+      missingPropertyCharacteristics,
+      missingPricing,
+      insufficientComparableSignals: insufficientComparables,
+      modelStatus: !scoringGeneratedAt ? "unavailable"
+        : !Number.isFinite(modelGeneratedMs) || modelGeneratedMs < staleModelCutoff ? "outdated" : "current",
+      valuationGuidance: "CRM suggestions must retain valuationStatus, dataFreshness and confidence; stale, unavailable or low-confidence values must not be presented as current estimates.",
     },
     coverage,
     classifications: {

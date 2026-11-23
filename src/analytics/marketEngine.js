@@ -478,6 +478,9 @@ export class LiveMarketEngine {
 
   publicSnapshot() {
     const storedListings = this.store.getListings();
+    const workingSet = typeof this.store.cacheStatus === "function"
+      ? this.store.cacheStatus()
+      : { cachedListings: storedListings.length, totalListings: storedListings.length, complete: true };
     const listings = storedListings.filter(inScope);
     const coordinateCount = listings.filter(coordinatePoint).length;
     const modelSummaries = Object.fromEntries(
@@ -494,6 +497,8 @@ export class LiveMarketEngine {
       generatedAt: new Date().toISOString(),
       mode: "live-incremental-coordinate-based",
       listingCount: listings.length,
+      totalListingCount: workingSet.totalListings,
+      workingSet,
       excludedOutOfScope: storedListings.length - listings.length,
       categoryScope: "buy-residential-apartment",
       coordinateCoverage: {
