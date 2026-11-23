@@ -44,7 +44,7 @@ function summarize(listings, scoreByToken) {
   };
 }
 
-export function buildLocationView({ identifier = "iran", listings = [], scoredListings = [] } = {}) {
+export function buildLocationView({ identifier = "iran", listings = [], scoredListings = [], workingSet = null } = {}) {
   const node = /^\d+$/.test(String(identifier))
     ? locationHierarchy.getNodeById(identifier)
     : locationHierarchy.getNodeBySlug(identifier);
@@ -62,6 +62,8 @@ export function buildLocationView({ identifier = "iran", listings = [], scoredLi
     generatedAt: new Date().toISOString(),
     node,
     breadcrumb: locationHierarchy.getPath(node.id),
+    workingSet: workingSet || { cachedListings: listings.length, totalListings: listings.length, complete: true, authority: "in-memory" },
+    metricsScope: workingSet?.complete === false ? "bounded-recent-working-set" : "complete",
     summary: summarize(matching, scoreByToken),
     children,
     listings: matching.slice(0, 200).map((listing) => {

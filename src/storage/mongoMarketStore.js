@@ -15,6 +15,7 @@ import { DurableCrawlQueue } from "../collector/durableCrawlQueue.js";
 import { ListingActivity } from "../models/listingActivity.js";
 import { listingActivities, lifecycleActivities, possiblePropertyLink } from "../collector/listingHistory.js";
 import { ListingPropertyLink } from "../models/listingPropertyLink.js";
+import { buildMarketMetricsPipeline, normalizeMarketMetrics } from "./marketMetrics.js";
 import {
   buildBuyerMongoFilter,
   criteriaFingerprint,
@@ -67,6 +68,7 @@ export class MongoMarketStore extends JsonMarketStore {
     this.crawlQueue = new DurableCrawlQueue();
     this.activityModel = activityModel;
     this.propertyLinkModel = propertyLinkModel;
+    this.marketMetricsCache = null;
   }
 
   async mongoOperation(label, operation) {
@@ -293,6 +295,44 @@ export class MongoMarketStore extends JsonMarketStore {
       this.listingModel.aggregate([{ $group: { _id: null, minPrice: { $min: "$pricing.price" }, maxPrice: { $max: "$pricing.price" }, minArea: { $min: "$property.area" }, maxArea: { $max: "$property.area" } } }]),
     ]));
     return { districts: districts.sort(), categories: categories.sort(), bounds: bounds[0] || {} };
+  }
+
+  async marketMetrics({ now = new Date(), queryMaxTimeMs = 5_000, cacheTtlMs = 30_000 } = {}) {
+    const nowDate = now instanceof Date ? now : new Date(now);
+    if (!Number.isFinite(nowDate.getTime())) throw new Error("market metrics now must be a valid date");
+    const cacheKey = Math.floor(nowDate.getTime() / Math.max(1, cacheTtlMs));
+    if (this.marketMetricsCache?.key === cacheKey) return this.marketMetricsCache.promise;
+    const promise = this.mongoOperation("market-metrics.aggregate", async () => {
+      const activeModel = await this.modelVersionModel.findOne({ kind: "batch-price", status: "active" })
+        .select({ _id: 0, modelId: 1, generatedAt: 1 }).maxTimeMS(queryMaxTimeMs).lean();
+      const [facets, activeScoreCount, recentActivity] = await Promise.all([
+        this.listingModel.aggregate(buildMarketMetricsPipeline(nowDate))
+          .option({ maxTimeMS: queryMaxTimeMs, allowDiskUse: true }),
+        activeModel ? this.listingScoreModel.countDocuments({ modelId: activeModel.modelId }).maxTimeMS(queryMaxTimeMs) : 0,
+        this.activityModel.aggregate([
+          { $match: { observedAt: { $gte: new Date(nowDate.getTime() - 86_400_000) } } },
+          { $group: { _id: { type: "$type", token: "$token" }, observations: { $sum: 1 } } },
+          { $group: { _id: "$_id.type", observations: { $sum: "$observations" }, listingCount: { $sum: 1 } } },
+          { $project: { _id: 0, type: "$_id", observations: 1, listingCount: 1 } },
+          { $sort: { observations: -1, type: 1 } },
+        ]).option({ maxTimeMS: queryMaxTimeMs, allowDiskUse: true }),
+      ]);
+      const result = normalizeMarketMetrics(facets[0], {
+        activeModel,
+        activeScoreCount,
+        recentActivity,
+        generatedAt: nowDate.toISOString(),
+      });
+      result.limits.aggregationDeadlineMs = queryMaxTimeMs;
+      return result;
+    });
+    this.marketMetricsCache = { key: cacheKey, promise };
+    try {
+      return await promise;
+    } catch (error) {
+      if (this.marketMetricsCache?.promise === promise) this.marketMetricsCache = null;
+      throw error;
+    }
   }
 
   async publicListing(token, { queryMaxTimeMs = 2_000 } = {}) {

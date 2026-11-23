@@ -20,7 +20,7 @@ function countBy(listings, selector) {
 
 export function buildDataQualityBaseline({
   listings = [], scoredDocument = null, scoringReport = null,
-  now = new Date().toISOString(), workingSet = null,
+  now = new Date().toISOString(), workingSet = null, databaseMetrics = null,
 } = {}) {
   const scoredListings = scoredDocument?.listings || [];
   const scoredTokens = new Set(scoredListings.map((item) => item.token));
@@ -76,7 +76,7 @@ export function buildDataQualityBaseline({
     cachedListings: listings.length, totalListings: listings.length,
     complete: true, authority: "in-memory",
   };
-  return {
+  const payload = {
     schemaVersion: "1.0.0",
     generatedAt: now,
     inventory: {
@@ -119,8 +119,75 @@ export function buildDataQualityBaseline({
     },
     blockers: [...blockers.entries()].map(([reason, count]) => ({ reason, count, percent: percent(count, listings.length) })).sort((a, b) => b.count - a.count),
     samples: {
+      scope: workingSetStatus.complete ? "complete-in-memory-dataset" : "bounded-recent-working-set",
       eligibleUnscored: eligibleUnscored.slice(0, 20),
       rejected: rejected.slice(0, 20),
+    },
+  };
+  if (!databaseMetrics) {
+    return {
+      ...payload,
+      metricsScope: workingSetStatus.complete ? "complete" : "bounded-recent-working-set",
+      metricScopes: {
+        inventory: workingSetStatus.complete ? "full-database" : "bounded-recent-working-set",
+        freshness: workingSetStatus.complete ? "full-database" : "bounded-recent-working-set",
+        coverage: workingSetStatus.complete ? "full-database" : "bounded-recent-working-set",
+        classifications: workingSetStatus.complete ? "full-database" : "bounded-recent-working-set",
+        samples: payload.samples.scope,
+      },
+    };
+  }
+
+  const summary = databaseMetrics.summary;
+  const activeScoreCount = databaseMetrics.scoring.activeScoreCount;
+  return {
+    ...payload,
+    inventory: {
+      total: summary.total,
+      analyzed: summary.total,
+      active: summary.active,
+      latestListingAt: summary.latestListingAt,
+    },
+    freshness: {
+      ...payload.freshness,
+      notObservedWithin7Days: summary.notObservedWithin7Days,
+      possiblyRemoved: summary.possiblyRemoved,
+      removed: summary.removed,
+      missingPropertyCharacteristics: summary.missingPropertyCharacteristics,
+      missingPricing: summary.missingPricing,
+      insufficientComparableSignals: summary.insufficientComparableSignals,
+      modelStatus: !databaseMetrics.scoring.generatedAt ? "unavailable"
+        : Date.parse(databaseMetrics.scoring.generatedAt) < staleModelCutoff ? "outdated" : "current",
+    },
+    coverage: databaseMetrics.coverage,
+    classifications: databaseMetrics.classifications,
+    scoring: {
+      ...payload.scoring,
+      totalScored: activeScoreCount,
+      unscoredTotal: Math.max(0, summary.total - activeScoreCount),
+      populationCoveragePercent: databaseMetrics.scoring.populationCoveragePercent,
+      eligible: databaseMetrics.scoring.eligibleListings,
+      workingSetEligibleScored: payload.scoring.eligibleScored,
+      workingSetEligibleUnscored: payload.scoring.eligibleUnscored,
+    },
+    blockers: databaseMetrics.blockers,
+    metricsScope: "full-database-with-bounded-samples",
+    metricScopes: {
+      inventory: "full-database",
+      freshness: "full-database",
+      coverage: "full-database",
+      classifications: "full-database",
+      blockers: "full-database",
+      scoringPopulation: "full-database-active-model",
+      scoringEligibilityIntersection: payload.samples.scope,
+      samples: payload.samples.scope,
+    },
+    databaseMetrics: {
+      scope: databaseMetrics.scope,
+      neighborhoods: databaseMetrics.neighborhoods,
+      neighborhoodLimit: databaseMetrics.limits.neighborhoods,
+      priceDistribution: databaseMetrics.priceDistribution,
+      recentActivity: databaseMetrics.recentActivity,
     },
   };
 }

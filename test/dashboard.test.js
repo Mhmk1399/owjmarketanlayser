@@ -108,3 +108,32 @@ test("dashboard summary exposes actionable crawl and data-quality metrics", () =
   assert.equal(payload.scoring.count, 1);
   assert.equal(payload.scoring.listings[0].scores.recommendation, 75);
 });
+
+test("dashboard replaces bounded totals with exact database metrics and labels mixed scope", () => {
+  const payload = buildDashboardPayload({
+    listings: [listing("cached", "exact")],
+    databaseMetrics: {
+      scope: { kind: "full-database", completeness: "complete", sampled: false, filtered: false },
+      summary: {
+        total: 1_200, inScopeListings: 1_000, completeListings: 800,
+        averageInScopeQualityScore: 91.5, inScopeCoordinatesAvailable: 900,
+        inScopeExactCoordinates: 700, inScopeApproximateCoordinates: 150,
+        inScopeAreaChecks: 850, inScopeAreaMatches: 800,
+      },
+      classifications: { lifecycle: [{ key: "active", count: 1_100 }] },
+      neighborhoods: [{ name: "synthetic", count: 100 }],
+      priceDistribution: [{ bucketStart: 0, count: 10 }],
+      recentActivity: [{ type: "created", observations: 2, listingCount: 2 }],
+      scoring: { activeScoreCount: 900 },
+      limits: { neighborhoods: 200 },
+    },
+  });
+  assert.equal(payload.overview.storedListings, 1_200);
+  assert.equal(payload.overview.inScopeListings, 1_000);
+  assert.equal(payload.overview.excludedOutOfScope, 200);
+  assert.equal(payload.locationQuality.coverage, 90);
+  assert.equal(payload.metricsScope, "full-database-with-bounded-recommendations");
+  assert.equal(payload.metricScopes.overview, "full-database");
+  assert.equal(payload.metricScopes.recommendations, "bounded-recent-working-set");
+  assert.equal(payload.marketDistribution.neighborhoods[0].count, 100);
+});

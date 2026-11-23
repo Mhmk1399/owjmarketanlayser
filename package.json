@@ -35,6 +35,8 @@
     "benchmark:sprint4:cache": "node --expose-gc scripts/benchmark-sprint4-cache.js",
     "benchmark:sprint4:scoring": "node --expose-gc --max-old-space-size=1536 scripts/benchmark-sprint4-scoring.js",
     "benchmark:sprint4:restored": "node --expose-gc scripts/benchmark-sprint4-restored.js",
+    "analyze:sprint5:restored": "node scripts/analyze-sprint5-restored.js",
+    "benchmark:sprint5:colocation": "node scripts/benchmark-sprint5-colocation.js",
     "db:plan": "node scripts/init-analytics-database.js",
     "db:init": "node scripts/init-analytics-database.js --apply",
     "db:seed:synthetic": "node scripts/seed-analytics-synthetic.js",

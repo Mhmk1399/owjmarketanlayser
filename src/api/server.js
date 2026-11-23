@@ -518,20 +518,31 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
         url.pathname === "/data-quality" && !request.headers.accept?.includes("text/html")
       );
       if (request.method === "GET" && isDataQualityRequest) {
-        const [scoredDocument, scoringReport] = await Promise.all([
+        const [scoredDocument, scoringReport, databaseMetrics] = await Promise.all([
           readScoredDocument(), readJson(config.paths.scoringReport, null),
+          typeof store.marketMetrics === "function"
+            ? store.marketMetrics({ queryMaxTimeMs: Math.max(5_000, config.search?.queryMaxTimeMs || 0) }).catch((error) => {
+              logger.warn("market-metrics.unavailable", "Full-database data-quality metrics unavailable; using bounded working set", { error: error.message });
+              return null;
+            }) : null,
         ]);
         return sendJson(response, 200, buildDataQualityBaseline({
           listings: store.getListings(), scoredDocument, scoringReport,
           workingSet: typeof store.cacheStatus === "function" ? store.cacheStatus() : null,
+          databaseMetrics,
         }));
       }
 
       if (request.method === "GET" && url.pathname === "/dashboard") {
-        const [analyticsDocument, savedServiceState, scoredDocument] = await Promise.all([
+        const [analyticsDocument, savedServiceState, scoredDocument, databaseMetrics] = await Promise.all([
           readJson(config.paths.analytics, analytics.publicSnapshot()),
           store.readServiceState(),
           readScoredDocument(),
+          typeof store.marketMetrics === "function"
+            ? store.marketMetrics({ queryMaxTimeMs: Math.max(5_000, config.search?.queryMaxTimeMs || 0) }).catch((error) => {
+              logger.warn("market-metrics.unavailable", "Full-database dashboard metrics unavailable; using bounded working set", { error: error.message });
+              return null;
+            }) : null,
         ]);
         const liveCrawl = crawler.snapshot();
         const dashboardCrawl = liveCrawl.status === "idle" && savedServiceState?.crawl
@@ -566,6 +577,7 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
           recommendationAnalyses: recommendationAnalysisCache.value,
           scoredDocument,
           recentEvents: logger.getRecent(40),
+          databaseMetrics,
         });
         const workingSet = typeof store.cacheStatus === "function" ? store.cacheStatus() : {
           cachedListings: store.getListings().length, totalListings: store.getListings().length,
@@ -577,7 +589,7 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
             ...payload.overview,
             storedListings: workingSet.totalListings,
             analyzedListings: payload.overview.storedListings,
-            metricsScope: workingSet.complete ? "complete" : "bounded-recent-working-set",
+            metricsScope: databaseMetrics ? "full-database" : workingSet.complete ? "complete" : "bounded-recent-working-set",
           },
           workingSet,
         });
@@ -1010,6 +1022,7 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
           identifier: locationMatch[1] || "iran",
           listings: store.getListings(),
           scoredListings: scoredDocument?.listings || [],
+          workingSet: typeof store.cacheStatus === "function" ? store.cacheStatus() : null,
         });
         return view
           ? sendJson(response, 200, view)
@@ -1024,10 +1037,13 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
       }
 
       if (request.method === "GET" && url.pathname === "/areas") {
+        const workingSet = typeof store.cacheStatus === "function" ? store.cacheStatus() : null;
         return sendJson(response, 200, {
           schemaVersion: "1.1.0",
           generatedAt: new Date().toISOString(),
           spatialCellSizeMeters: analytics.spatialCellSizeMeters,
+          workingSet,
+          metricsScope: workingSet?.complete === false ? "bounded-recent-working-set" : "complete",
           areas: analytics.spatialMetrics(),
         });
       }
@@ -1035,20 +1051,26 @@ export function createAnalyticsServer({ config, store, analytics, crawler, logge
       const areaMatch = url.pathname.match(/^\/areas\/(.+)$/);
       if (request.method === "GET" && areaMatch) {
         const areaId = decodeURIComponent(areaMatch[1]);
+        const workingSet = typeof store.cacheStatus === "function" ? store.cacheStatus() : null;
         return sendJson(response, 200, {
           schemaVersion: "1.1.0",
           generatedAt: new Date().toISOString(),
           areaId,
+          workingSet,
+          metricsScope: workingSet?.complete === false ? "bounded-recent-working-set" : "complete",
           metrics: analytics.spatialMetrics().filter((item) => item.area.id === areaId),
         });
       }
 
       if (request.method === "GET" && url.pathname === "/recommendations") {
         const limit = numberParam(url.searchParams.get("limit"), 20, 1, 100);
+        const workingSet = typeof store.cacheStatus === "function" ? store.cacheStatus() : null;
         return sendJson(response, 200, {
           schemaVersion: "1.0.0",
           generatedAt: new Date().toISOString(),
           disclaimer: "Experimental market ranking only; not investment advice.",
+          workingSet,
+          metricsScope: workingSet?.complete === false ? "bounded-recent-working-set" : "complete",
           recommendations: analytics.recommendations(limit),
         });
       }

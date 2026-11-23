@@ -26,6 +26,7 @@ export function buildDashboardPayload({
   recommendationAnalyses = new Map(),
   scoredDocument = null,
   recentEvents = [],
+  databaseMetrics = null,
   now = new Date().toISOString(),
 } = {}) {
   const inScope = listings.filter((listing) => (
@@ -116,6 +117,11 @@ export function buildDashboardPayload({
   const processed = crawl.processed ?? 0;
   const successful = crawl.successful ?? 0;
   const failed = crawl.failed ?? 0;
+  const metrics = databaseMetrics?.summary || null;
+  const exactInScope = metrics?.inScopeListings ?? inScope.length;
+  const exactCoordinateAvailable = metrics?.inScopeCoordinatesAvailable ?? coordinatesAvailable;
+  const exactAreaChecks = metrics?.inScopeAreaChecks ?? areaChecks.length;
+  const exactAreaMatches = metrics?.inScopeAreaMatches ?? areaMatches;
   return {
     schemaVersion: "1.0.0",
     generatedAt: now,
@@ -154,26 +160,26 @@ export function buildDashboardPayload({
     },
     overview: {
       categoryScope: analyticsDocument.categoryScope ?? "buy-residential-apartment",
-      storedListings: listings.length,
-      inScopeListings: inScope.length,
-      excludedOutOfScope: listings.length - inScope.length,
+      storedListings: metrics?.total ?? listings.length,
+      inScopeListings: exactInScope,
+      excludedOutOfScope: (metrics?.total ?? listings.length) - exactInScope,
       candidateTarget,
       candidateCoverage: ratio(discovered, candidateTarget),
-      completeListings,
-      completenessRate: ratio(completeListings, inScope.length),
-      averageQualityScore: average(inScope.map((listing) => listing.quality?.score)),
+      completeListings: metrics?.completeListings ?? completeListings,
+      completenessRate: ratio(metrics?.completeListings ?? completeListings, exactInScope),
+      averageQualityScore: metrics?.averageInScopeQualityScore ?? average(inScope.map((listing) => listing.quality?.score)),
     },
     locationQuality: {
-      available: coordinatesAvailable,
-      missing: missingCoordinates,
-      coverage: ratio(coordinatesAvailable, inScope.length),
-      exact,
-      approximate,
-      unknown: Math.max(0, coordinatesAvailable - exact - approximate),
-      exactRate: ratio(exact, coordinatesAvailable),
-      areaChecks: areaChecks.length,
-      areaMatches,
-      areaMatchRate: ratio(areaMatches, areaChecks.length),
+      available: exactCoordinateAvailable,
+      missing: exactInScope - exactCoordinateAvailable,
+      coverage: ratio(exactCoordinateAvailable, exactInScope),
+      exact: metrics?.inScopeExactCoordinates ?? exact,
+      approximate: metrics?.inScopeApproximateCoordinates ?? approximate,
+      unknown: Math.max(0, exactCoordinateAvailable - (metrics?.inScopeExactCoordinates ?? exact) - (metrics?.inScopeApproximateCoordinates ?? approximate)),
+      exactRate: ratio(metrics?.inScopeExactCoordinates ?? exact, exactCoordinateAvailable),
+      areaChecks: exactAreaChecks,
+      areaMatches: exactAreaMatches,
+      areaMatchRate: ratio(exactAreaMatches, exactAreaChecks),
     },
     areaCoverage: {
       total: areas.length,
@@ -214,6 +220,23 @@ export function buildDashboardPayload({
       listings: [],
     },
     recentEvents: recentEvents.slice(-40).reverse(),
+    metricsScope: databaseMetrics ? "full-database-with-bounded-recommendations" : "bounded-recent-working-set",
+    metricScopes: {
+      overview: databaseMetrics ? "full-database" : "bounded-recent-working-set",
+      locationQuality: databaseMetrics ? "full-database" : "bounded-recent-working-set",
+      marketDistribution: databaseMetrics ? "full-database" : "unavailable",
+      recommendations: "bounded-recent-working-set",
+      recentEvents: "bounded-process-log",
+    },
+    marketDistribution: databaseMetrics ? {
+      scope: databaseMetrics.scope,
+      lifecycle: databaseMetrics.classifications.lifecycle,
+      neighborhoods: databaseMetrics.neighborhoods,
+      neighborhoodLimit: databaseMetrics.limits.neighborhoods,
+      price: databaseMetrics.priceDistribution,
+      recentActivity: databaseMetrics.recentActivity,
+      scoring: databaseMetrics.scoring,
+    } : null,
     disclaimer: analyticsDocument.disclaimer ?? null,
   };
 }

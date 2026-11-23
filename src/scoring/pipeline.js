@@ -15,11 +15,53 @@ const DEFAULT_PATHS = Object.freeze({
   report: path.join(serviceRoot, "data", "scoring-report.json"),
 });
 
-async function writeJsonAtomic(file, value) {
+async function writeJsonTemporary(file, value) {
   await fs.mkdir(path.dirname(file), { recursive: true });
   const temporary = `${file}.${process.pid}.tmp`;
-  await fs.writeFile(temporary, JSON.stringify(value, null, 2), "utf8");
-  await fs.rename(temporary, file);
+  const handle = await fs.open(temporary, "w");
+  try {
+    await handle.write("{\n");
+    const entries = Object.entries(value);
+    for (let entryIndex = 0; entryIndex < entries.length; entryIndex += 1) {
+      const [key, nested] = entries[entryIndex];
+      await handle.write(`  ${JSON.stringify(key)}: `);
+      if (Array.isArray(nested)) {
+        await handle.write("[\n");
+        for (let offset = 0; offset < nested.length; offset += 100) {
+          const batch = nested.slice(offset, offset + 100).map((item, index) => {
+            const absoluteIndex = offset + index;
+            return `    ${JSON.stringify(item)}${absoluteIndex + 1 < nested.length ? "," : ""}\n`;
+          }).join("");
+          await handle.write(batch);
+        }
+        await handle.write("  ]");
+      } else {
+        const serialized = JSON.stringify(nested, null, 2).replaceAll("\n", "\n  ");
+        await handle.write(serialized);
+      }
+      await handle.write(`${entryIndex + 1 < entries.length ? "," : ""}\n`);
+    }
+    await handle.write("}\n");
+  } catch (error) {
+    await handle.close().catch(() => {});
+    await fs.unlink(temporary).catch(() => {});
+    throw error;
+  }
+  await handle.close();
+  return temporary;
+}
+
+export async function writeJsonGenerationAtomically(entries) {
+  const staged = [];
+  try {
+    for (const [file, value] of entries) {
+      staged.push([await writeJsonTemporary(file, value), file]);
+    }
+  } catch (error) {
+    await Promise.all(staged.map(([temporary]) => fs.unlink(temporary).catch(() => {})));
+    throw error;
+  }
+  for (const [temporary, file] of staged) await fs.rename(temporary, file);
 }
 
 function invoke(callback, value) {
@@ -98,9 +140,9 @@ export async function runScoringPipeline(
         cleaning: cleaned.summary,
         events,
       }, "scoring not-ready report");
-      await Promise.all([
-        writeJsonAtomic(paths.scoringReady, scoringReadyDocument),
-        writeJsonAtomic(paths.report, report),
+      await writeJsonGenerationAtomically([
+        [paths.scoringReady, scoringReadyDocument],
+        [paths.report, report],
       ]);
       const result = {
         paths,
@@ -174,11 +216,11 @@ export async function runScoringPipeline(
     if (typeof callbacks.onPersist === "function") {
       await callbacks.onPersist({ report, ...documents });
     }
-    await Promise.all([
-      writeJsonAtomic(paths.scoringReady, scoringReadyDocument),
-      writeJsonAtomic(paths.model, modelDocument),
-      writeJsonAtomic(paths.scoredListings, scoredDocument),
-      writeJsonAtomic(paths.report, report),
+    await writeJsonGenerationAtomically([
+      [paths.scoringReady, scoringReadyDocument],
+      [paths.model, modelDocument],
+      [paths.scoredListings, scoredDocument],
+      [paths.report, report],
     ]);
     const result = { paths, report, documents, topListings: scored.listings.slice(0, 20) };
     invoke(callbacks.onComplete, result);

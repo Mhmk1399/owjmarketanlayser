@@ -6,7 +6,7 @@ import path from "node:path";
 import { cleanListings, scoringEligibilityReasons } from "../src/scoring/cleanListings.js";
 import { trainCrossValidatedPriceModel } from "../src/scoring/ridgePriceModel.js";
 import { createComparableIndex, scoreListings } from "../src/scoring/scoringMachine.js";
-import { runScoringPipeline } from "../src/scoring/pipeline.js";
+import { runScoringPipeline, writeJsonGenerationAtomically } from "../src/scoring/pipeline.js";
 
 function rawListing(index, overrides = {}) {
   const latitude = 35.62 + (index % 13) * 0.004;
@@ -182,4 +182,20 @@ test("empty input reports not-ready and never publishes a trained model", async 
   await assert.rejects(fs.access(paths.model), /ENOENT/);
   await assert.rejects(fs.access(paths.scoredListings), /ENOENT/);
   assert.deepEqual(JSON.parse(await fs.readFile(paths.scoringReady, "utf8")).listings, []);
+});
+
+test("compatibility generation stages every file before replacing an existing snapshot", async () => {
+  const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "owj-score-generation-test-"));
+  const preserved = path.join(temporary, "preserved.json");
+  const rejected = path.join(temporary, "rejected.json");
+  await fs.writeFile(preserved, "preserved-generation\n");
+
+  await assert.rejects(writeJsonGenerationAtomically([
+    [preserved, { listings: [{ token: "new-generation" }] }],
+    [rejected, { report: 1n }],
+  ]));
+
+  assert.equal(await fs.readFile(preserved, "utf8"), "preserved-generation\n");
+  const files = await fs.readdir(temporary);
+  assert.equal(files.some((file) => file.endsWith(".tmp")), false);
 });
